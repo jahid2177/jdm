@@ -6,16 +6,29 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'download_record.dart';
+import 'segmented_downloader.dart';
 
 /// Streaming HTTP(S) downloader shared by Windows and Android.
-/// This first milestone uses one connection per file, up to 3 files at once.
+/// Uses verified byte ranges when available and a single stream otherwise.
 class DownloadController extends ChangeNotifier {
-  DownloadController._(this._stateDirectory, this.downloadDirectory);
+  DownloadController._(
+    this._stateDirectory,
+    this.downloadDirectory, {
+    this.segmentThresholdBytes = 2 * 1024 * 1024,
+    this.connectionsPerFile = 4,
+  });
 
   factory DownloadController.forTesting(
     Directory stateDirectory,
-    Directory downloadDirectory,
-  ) => DownloadController._(stateDirectory, downloadDirectory);
+    Directory downloadDirectory, {
+    int segmentThresholdBytes = 2 * 1024 * 1024,
+    int connectionsPerFile = 4,
+  ) => DownloadController._(
+        stateDirectory,
+        downloadDirectory,
+        segmentThresholdBytes: segmentThresholdBytes,
+        connectionsPerFile: connectionsPerFile,
+      );
 
   static Future<DownloadController> create() async {
     final stateDirectory = await getApplicationSupportDirectory();
@@ -29,10 +42,13 @@ class DownloadController extends ChangeNotifier {
 
   final Directory _stateDirectory;
   final Directory downloadDirectory;
+  final int segmentThresholdBytes;
+  final int connectionsPerFile;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
   final Set<String> _activeIds = {};
   Future<void> _pendingSave = Future.value();
+  Future<void> _finalizeBarrier = Future.value();
   int _sequence = 0;
   int maxSimultaneous = 3;
 
@@ -63,8 +79,17 @@ class DownloadController extends ChangeNotifier {
         record.status = DownloadStatus.paused;
       }
       if (record.status != DownloadStatus.completed) {
-        final part = _partialFile(record);
-        if (await part.exists()) record.downloadedBytes = await part.length();
+        if (record.segments.isNotEmpty) {
+          try {
+            await SegmentedDownloader.syncFiles(record);
+          } catch (error) {
+            record.status = DownloadStatus.failed;
+            record.error = error.toString();
+          }
+        } else {
+          final part = _partialFile(record);
+          if (await part.exists()) record.downloadedBytes = await part.length();
+        }
       }
     }
     notifyListeners();
@@ -143,6 +168,7 @@ class DownloadController extends ChangeNotifier {
     }
     final part = _partialFile(record);
     if (await part.exists()) await part.delete();
+    await SegmentedDownloader.deleteSegments(record);
     // Completed files remain on disk when history is removed.
     _records.remove(record);
     notifyListeners();
@@ -197,6 +223,90 @@ class DownloadController extends ChangeNotifier {
   Future<void> _download(DownloadRecord record) async {
     final part = _partialFile(record);
     await part.parent.create(recursive: true);
+    final existing = await part.exists() ? await part.length() : 0;
+    if (record.segments.isNotEmpty || existing == 0) {
+      final probe = await SegmentedDownloader.probe(Uri.parse(record.url));
+      if (record.status != DownloadStatus.downloading) return;
+      if (record.segments.isNotEmpty) {
+        final previous = RangeProbe(
+          record.totalBytes ?? 0, record.etag, record.lastModified,
+        );
+        final canResume = probe != null &&
+            probe.totalBytes == previous.totalBytes &&
+            probe.validator != null &&
+            probe.validator == previous.validator;
+        if (!canResume) {
+          // Never append saved segments to an unverified or changed resource.
+          await SegmentedDownloader.deleteSegments(record);
+          record.segments.clear();
+          record.usedConnections = 1;
+          record.downloadedBytes = 0;
+          record.totalBytes = null;
+          record.etag = null;
+          record.lastModified = null;
+          await _save();
+        }
+      }
+      if (record.segments.isEmpty && existing == 0 && probe != null &&
+          probe.validator != null &&
+          probe.totalBytes >= segmentThresholdBytes) {
+        record.segments.addAll(
+          SegmentedDownloader.plan(probe.totalBytes, connectionsPerFile),
+        );
+        record.usedConnections = record.segments.length;
+        record.totalBytes = probe.totalBytes;
+        record.etag = probe.etag;
+        record.lastModified = probe.lastModified;
+        record.downloadedBytes = 0;
+        await _save();
+      }
+      if (record.segments.isNotEmpty) {
+        final client = HttpClient()
+          ..autoUncompress = false
+          ..connectionTimeout = const Duration(seconds: 25)
+          ..maxConnectionsPerHost = connectionsPerFile.clamp(1, 16).toInt();
+        _clients[record.id] = client;
+        final clock = Stopwatch()..start();
+        var lastMillis = 0;
+        var lastBytes = record.downloadedBytes;
+        await SegmentedDownloader.fetchAll(
+          record: record,
+          client: client,
+          isDownloading: () => record.status == DownloadStatus.downloading,
+          onProgress: () {
+            final now = clock.elapsedMilliseconds;
+            if (now - lastMillis < 500) return;
+            final elapsed = now - lastMillis;
+            record.bytesPerSecond =
+                (record.downloadedBytes - lastBytes) * 1000 / elapsed;
+            lastMillis = now;
+            lastBytes = record.downloadedBytes;
+            notifyListeners();
+            unawaited(_save().catchError((Object _) {}));
+          },
+        );
+        if (record.status != DownloadStatus.downloading) return;
+        await SegmentedDownloader.assemble(record, part);
+        final segmentBasePath = record.savePath;
+        await _finalizeFile(record, part);
+        try {
+          await SegmentedDownloader.deleteSegments(
+            record,
+            basePath: segmentBasePath,
+          );
+        } catch (error) {
+          debugPrint('Could not remove temporary segments: $error');
+        }
+        record.segments.clear();
+        return;
+      }
+    }
+    if (record.status == DownloadStatus.downloading) {
+      await _downloadSingle(record, part);
+    }
+  }
+
+  Future<void> _downloadSingle(DownloadRecord record, File part) async {
     var existing = await part.exists() ? await part.length() : 0;
     final client = HttpClient()
       ..autoUncompress = false
@@ -217,6 +327,10 @@ class DownloadController extends ChangeNotifier {
     if (response.statusCode != HttpStatus.ok &&
         response.statusCode != HttpStatus.partialContent) {
       throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(record.url));
+    }
+    final encoding = response.headers.value(HttpHeaders.contentEncodingHeader);
+    if (encoding != null && encoding.toLowerCase() != 'identity') {
+      throw StateError('Server returned an encoded response unexpectedly.');
     }
 
     int? total;
@@ -255,13 +369,13 @@ class DownloadController extends ChangeNotifier {
     record.downloadedBytes = existing;
     notifyListeners();
 
-    final sink = part.openWrite(mode: mode);
+    final writer = await part.open(mode: mode);
     var lastNotify = DateTime.now();
     var lastSpeedBytes = existing;
     try {
       await for (final bytes in response) {
         if (record.status != DownloadStatus.downloading) break;
-        sink.add(bytes);
+        await writer.writeFrom(bytes);
         record.downloadedBytes += bytes.length;
         final now = DateTime.now();
         final elapsed = now.difference(lastNotify).inMilliseconds;
@@ -274,9 +388,9 @@ class DownloadController extends ChangeNotifier {
           unawaited(_save().catchError((Object _) {}));
         }
       }
-      await sink.flush();
+      await writer.flush();
     } finally {
-      await sink.close();
+      await writer.close();
     }
     if (record.status != DownloadStatus.downloading) return;
     final size = await part.length();
@@ -284,29 +398,45 @@ class DownloadController extends ChangeNotifier {
       throw StateError('Incomplete download: $size of $total bytes.');
     }
 
-    var destination = File(record.savePath);
-    if (await destination.exists()) {
-      final dot = record.fileName.lastIndexOf('.');
-      final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
-      final suffix = dot > 0 ? record.fileName.substring(dot) : '';
-      var index = 1;
-      do {
-        destination = File(
-          '${downloadDirectory.path}${Platform.pathSeparator}$stem ($index)$suffix',
-        );
-        index++;
-      } while (await destination.exists());
+    await _finalizeFile(record, part);
+  }
+
+  Future<void> _finalizeFile(DownloadRecord record, File part) async {
+    // Serialize final names so simultaneous downloads cannot overwrite each
+    // other between the existence check and the rename.
+    final permission = Completer<void>();
+    final previous = _finalizeBarrier;
+    _finalizeBarrier = permission.future;
+    await previous;
+    try {
+      final size = await part.length();
+      var destination = File(record.savePath);
+      if (await destination.exists()) {
+        final dot = record.fileName.lastIndexOf('.');
+        final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
+        final suffix = dot > 0 ? record.fileName.substring(dot) : '';
+        var index = 1;
+        do {
+          destination = File(
+            '${downloadDirectory.path}${Platform.pathSeparator}$stem ($index)$suffix',
+          );
+          index++;
+        } while (await destination.exists());
+      }
+      await part.rename(destination.path);
+      record.savePath = destination.path;
+      record.downloadedBytes = size;
+      record.totalBytes = size;
+    } finally {
+      permission.complete();
     }
-    await part.rename(destination.path);
-    record.savePath = destination.path;
-    record.downloadedBytes = size;
-    record.totalBytes = size;
   }
 
   Future<void> waitForIdle({String? id}) async {
     while (id == null ? _activeIds.isNotEmpty : _activeIds.contains(id)) {
       await Future<void>.delayed(const Duration(milliseconds: 40));
     }
+    await _pendingSave;
   }
 
   Future<void> _save() {

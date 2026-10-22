@@ -1,5 +1,36 @@
 enum DownloadStatus { queued, downloading, paused, completed, failed }
 
+class DownloadSegment {
+  DownloadSegment({
+    required this.index,
+    required this.start,
+    required this.end,
+    this.downloadedBytes = 0,
+  });
+
+  final int index;
+  final int start;
+  final int end;
+  int downloadedBytes;
+
+  int get length => end - start + 1;
+  bool get complete => downloadedBytes == length;
+
+  Map<String, dynamic> toJson() => {
+        'index': index,
+        'start': start,
+        'end': end,
+        'downloadedBytes': downloadedBytes,
+      };
+
+  factory DownloadSegment.fromJson(Map<String, dynamic> json) => DownloadSegment(
+        index: (json['index'] as num).toInt(),
+        start: (json['start'] as num).toInt(),
+        end: (json['end'] as num).toInt(),
+        downloadedBytes: (json['downloadedBytes'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class DownloadRecord {
   DownloadRecord({
     required this.id,
@@ -13,7 +44,9 @@ class DownloadRecord {
     this.etag,
     this.lastModified,
     this.error,
-  });
+    this.usedConnections = 1,
+    List<DownloadSegment>? segments,
+  }) : segments = segments ?? [];
 
   final String id;
   final String url;
@@ -26,6 +59,8 @@ class DownloadRecord {
   String? etag;
   String? lastModified;
   String? error;
+  int usedConnections;
+  final List<DownloadSegment> segments;
   double bytesPerSecond = 0;
 
   double? get fraction => totalBytes == null || totalBytes == 0
@@ -44,6 +79,8 @@ class DownloadRecord {
         'etag': etag,
         'lastModified': lastModified,
         'error': error,
+        'usedConnections': usedConnections,
+        'segments': segments.map((s) => s.toJson()).toList(),
       };
 
   factory DownloadRecord.fromJson(Map<String, dynamic> json) => DownloadRecord(
@@ -61,5 +98,10 @@ class DownloadRecord {
         etag: json['etag'] as String?,
         lastModified: json['lastModified'] as String?,
         error: json['error'] as String?,
+        usedConnections: (json['usedConnections'] as num?)?.toInt() ?? 1,
+        segments: (json['segments'] as List<dynamic>? ?? [])
+            .map((value) => DownloadSegment.fromJson(
+                Map<String, dynamic>.from(value as Map)))
+            .toList(),
       );
 }

@@ -248,7 +248,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.1.0 • Md Jahidul Islam',
+              child: Text('JDM 0.2.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -341,6 +341,7 @@ class _DownloadHomeState extends State<DownloadHome> {
               DataColumn(label: Text('SIZE')),
               DataColumn(label: Text('PROGRESS')),
               DataColumn(label: Text('SPEED')),
+              DataColumn(label: Text('CONNECTIONS')),
               DataColumn(label: Text('STATUS')),
               DataColumn(label: Text('ACTIONS')),
             ],
@@ -360,6 +361,7 @@ class _DownloadHomeState extends State<DownloadHome> {
                   DataCell(Text(record.status == DownloadStatus.downloading
                       ? '${_bytes(record.bytesPerSecond.toInt())}/s'
                       : '—')),
+                  DataCell(Text('${record.usedConnections}')),
                   DataCell(_status(record)),
                   DataCell(_actions(record)),
                 ]),
@@ -396,6 +398,9 @@ class _DownloadHomeState extends State<DownloadHome> {
                     Text('${_bytes(record.downloadedBytes)} / ${_bytes(record.totalBytes)}',
                         style: const TextStyle(fontSize: 12)),
                   ]),
+                  const SizedBox(height: 5),
+                  Text('${record.usedConnections} connection(s)',
+                      style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
                     Text(record.error!, style: const TextStyle(color: Colors.red,

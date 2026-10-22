@@ -4,15 +4,23 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 1**, a real cross-platform HTTP(S)
+This repository contains **Milestone 2**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
-## Implemented in Milestone 1
+## Implemented through Milestone 2
 
 - Add HTTP/HTTPS download URLs and optionally rename the destination file.
 - Stream download data to disk without loading entire files into memory.
 - Download up to three different files simultaneously.
+- Split eligible individual files into up to four concurrent HTTP byte-range
+  connections. Each connection writes its own temporary segment file.
+- Verify `Content-Range`, total byte count, resource validator and final
+  assembled size before marking segmented downloads complete.
+- Persist and recover individual segment progress after a restart.
+- Invalidate old segments if the remote ETag/Last-Modified identity changes.
+- Automatically fall back to a single connection when Range is unsupported.
+- Display the connection count in Windows and Android download lists.
 - Pause, retry and resume from saved partial files when the server supports
   HTTP Range requests.
 - Gracefully restart from byte zero when a server ignores Range requests.
@@ -22,14 +30,15 @@ desktop download managers. It does not contain Internet Download Manager code.
 - Sanitize file names and avoid overwriting existing completed files.
 - Windows table view and Android card view, live progress, search and filters.
 - Light/dark mode, basic error messages and delete-history confirmation.
-- Automated test fixtures for ordinary, non-Range and interrupted downloads.
+- Automated test fixtures for ordinary, segmented, non-Range, restarted and
+  interrupted downloads, plus byte-range coverage.
 - GitHub Actions workflows for Windows release ZIP and Android ARM64 APK.
 
 ## Not yet implemented
 
 This is **not the full IDM-equivalent app**. The following are planned:
 
-- Multi-segment, multi-connection acceleration **within the same file**.
+- Adaptive connection tuning and configurable per-host connection limits.
 - Android Downloads folder export through Storage Access Framework/MediaStore.
 - Chrome/Edge/Firefox extensions and secure Native Messaging host.
 - Video detection, HLS/DASH, licensed optional FFmpeg integration.
@@ -98,6 +107,11 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
 ## Important limitations
 
 HTTP servers that do not provide valid ranges cannot reliably resume partial
-files. This app restarts such downloads. The current milestone does not handle
+files. This app restarts such downloads. A file must be at least **2 MiB**,
+provide valid byte-range responses, and expose an ETag or Last-Modified
+validator to use the segmented engine. Smaller or incompatible files use one
+stream. There is no guarantee that multiple connections will improve speed.
+
+The current milestone does not handle
 browser interception, logins, private website sessions or protected media.
 Please only download material you are authorized to access.
