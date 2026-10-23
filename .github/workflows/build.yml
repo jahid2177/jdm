@@ -73,3 +73,21 @@ jobs:
           name: JDM-Windows-x64
           path: JDM-Windows-x64.zip
           if-no-files-found: error
+      - name: Build per-user Windows installer
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source,
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          )
+          $compiler = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $compiler) { throw 'Inno Setup compiler ISCC.exe is missing from the Windows runner.' }
+          & $compiler 'installer/jdm.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: JDM-Windows-Installer-x64
+          path: build/installer/JDM-Setup-v0.9.0-Windows-x64.exe
+          if-no-files-found: error
