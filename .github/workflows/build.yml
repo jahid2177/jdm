@@ -89,5 +89,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: JDM-Windows-Installer-x64
-          path: build/installer/JDM-Setup-v1.1.0-Windows-x64.exe
+          path: build/installer/JDM-Setup-v1.2.0-Windows-x64.exe
           if-no-files-found: error
