@@ -1,6 +1,7 @@
 enum DownloadStatus { queued, downloading, paused, completed, failed }
 enum DownloadKind { file, directVideo, hls, dash }
 enum VideoQuality { highest, balanced, lowest }
+enum DownloadRetryPolicy { standard, extended, never }
 
 enum DownloadCategory { general, videos, documents, music, archives, other }
 
@@ -90,6 +91,9 @@ class DownloadRecord {
     this.androidExportError,
     this.retryAttempts = 0,
     this.retryAt,
+    this.retryPolicy = DownloadRetryPolicy.standard,
+    this.expectedSha256,
+    this.actualSha256,
     this.category = DownloadCategory.general,
     List<String>? alternateUrls,
     this.activeMirrorIndex = 0,
@@ -121,6 +125,12 @@ class DownloadRecord {
   String? androidExportError;
   int retryAttempts;
   DateTime? retryAt;
+  DownloadRetryPolicy retryPolicy;
+  String? expectedSha256;
+  String? actualSha256;
+  /// Runtime-only timing; never used to decide whether saved bytes are valid.
+  DateTime? lastProgressAt;
+  bool isVerifying = false;
   DownloadCategory category;
   final List<String> alternateUrls;
   int activeMirrorIndex;
@@ -128,6 +138,21 @@ class DownloadRecord {
   int reconnectChecks;
   final List<DownloadSegment> segments;
   double bytesPerSecond = 0;
+
+  Duration? get estimatedTimeRemaining {
+    final total = totalBytes;
+    if (status != DownloadStatus.downloading || total == null ||
+        bytesPerSecond <= 0 || total < downloadedBytes) return null;
+    final seconds = ((total - downloadedBytes) / bytesPerSecond).ceil();
+    if (seconds > 365 * 24 * 3600) return null;
+    return Duration(seconds: seconds);
+  }
+
+  bool get isStalled => status == DownloadStatus.downloading &&
+      !isVerifying &&
+      lastProgressAt != null &&
+      DateTime.now().difference(lastProgressAt!) >
+          const Duration(seconds: 15);
 
   String get activeUrl => activeMirrorIndex > 0 &&
           activeMirrorIndex <= alternateUrls.length
@@ -167,6 +192,9 @@ class DownloadRecord {
         'androidExportError': androidExportError,
         'retryAttempts': retryAttempts,
         'retryAt': retryAt?.toIso8601String(),
+        'retryPolicy': retryPolicy.name,
+        'expectedSha256': expectedSha256,
+        'actualSha256': actualSha256,
         'category': category.name,
         'alternateUrls': alternateUrls,
         'activeMirrorIndex': activeMirrorIndex,
@@ -214,6 +242,12 @@ class DownloadRecord {
         retryAt: json['retryAt'] is String
             ? DateTime.tryParse(json['retryAt'] as String)
             : null,
+        retryPolicy: DownloadRetryPolicy.values.firstWhere(
+          (value) => value.name == json['retryPolicy'],
+          orElse: () => DownloadRetryPolicy.standard,
+        ),
+        expectedSha256: json['expectedSha256'] as String?,
+        actualSha256: json['actualSha256'] as String?,
         category: DownloadCategory.values.firstWhere(
           (value) => value.name == json['category'],
           orElse: () => DownloadCategory.general,

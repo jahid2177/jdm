@@ -195,6 +195,8 @@ class _DownloadHomeState extends State<DownloadHome> {
         scheduledAt: input.scheduledAt,
         category: input.category,
         alternateUrls: input.alternateUrls,
+        retryPolicy: input.retryPolicy,
+        expectedSha256: input.expectedSha256,
       );
     } on DuplicateDownloadException catch (duplicate) {
       if (!mounted) return;
@@ -218,6 +220,8 @@ class _DownloadHomeState extends State<DownloadHome> {
         await widget.controller.addUrl(input.url, fileName: input.name,
             quality: input.quality, scheduledAt: input.scheduledAt,
             category: input.category, alternateUrls: input.alternateUrls,
+            retryPolicy: input.retryPolicy,
+            expectedSha256: input.expectedSha256,
             allowDuplicate: true);
       } catch (error) {
         if (mounted) _message('Duplicate download could not start: $error');
@@ -255,6 +259,33 @@ class _DownloadHomeState extends State<DownloadHome> {
   Future<void> _handle(DownloadRecord record, String action) async {
     if (action == 'diagnostics') {
       await _diagnostics(record);
+      return;
+    }
+    if (action == 'restart') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restart download from zero?'),
+          content: Text('Delete only JDM temporary bytes for "${record.fileName}" '
+              'and download it again? This is recommended after a SHA-256 '
+              'mismatch. Existing completed files are not touched.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true),
+                child: const Text('Restart from zero')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      try {
+        final restarted = await widget.controller.restartFromZero(record.id);
+        if (mounted) _message(restarted
+            ? 'Clean download queued.'
+            : 'Pause or wait for this download to stop first.');
+      } catch (error) {
+        if (mounted) _message('Could not restart from zero: $error');
+      }
       return;
     }
     if (action.startsWith('category:')) {
@@ -326,7 +357,16 @@ class _DownloadHomeState extends State<DownloadHome> {
                 'Expected: ${_bytes(record.totalBytes)}\n'
                 'Connections: ${record.usedConnections}\n'
                 'Automatic retries: ${record.retryAttempts}\n'
+                'Retry policy: ${record.retryPolicy.name} '
+                '(limit ${widget.controller.retryLimitFor(record)})\n'
                 'Offline checks: ${record.reconnectChecks}\n'
+                'Speed: ${_bytes(record.bytesPerSecond.toInt())}/s\n'
+                'ETA: ${_durationLabel(record.estimatedTimeRemaining)}\n'
+                'Last progress: ${record.lastProgressAt == null ? 'Not sampled' : _whenString(record.lastProgressAt!)}\n'
+                'Stalled (15 s): ${record.isStalled}\n'
+                'Verifying SHA-256: ${record.isVerifying}\n'
+                'SHA-256 expected: ${record.expectedSha256 ?? 'Not provided'}\n'
+                'SHA-256 calculated: ${record.actualSha256 ?? 'Not calculated'}\n'
                 'Waiting for network: ${record.waitingForNetwork}\n'
                 'Original URL: ${record.url}\n'
                 'Active URL: ${record.activeUrl}\n'
@@ -365,6 +405,8 @@ class _DownloadHomeState extends State<DownloadHome> {
                   Text('Stored completed data: ${_bytes(completedBytes)}'),
                   Text('Active: ${widget.controller.activeCount}  •  Waiting for network: $waiting'),
                   Text('Failed: ${all.where((r) => r.status == DownloadStatus.failed).length}'),
+                  Text('SHA-256 calculated: ${all.where((r) => r.actualSha256 != null).length}'),
+                  Text('Expected hash verified: ${all.where((r) => r.status == DownloadStatus.completed && r.expectedSha256 != null && r.actualSha256 == r.expectedSha256).length}'),
                   const Divider(height: 28),
                   const Text('Downloads by category',
                       style: TextStyle(fontWeight: FontWeight.bold)),
@@ -441,6 +483,66 @@ class _DownloadHomeState extends State<DownloadHome> {
       ),
     );
   }
+
+  Future<void> _monitoring() => showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Live download monitoring'),
+          content: SizedBox(
+            width: 540,
+            height: 380,
+            child: ListenableBuilder(
+              listenable: widget.controller,
+              builder: (context, _) {
+                final active = widget.controller.downloads.where((record) =>
+                    record.status == DownloadStatus.downloading ||
+                    record.waitingForNetwork ||
+                    record.retryAt != null).toList();
+                final samples = widget.controller.speedHistory;
+                final average = samples.isEmpty ? 0.0 :
+                    samples.fold<double>(0, (sum, s) => sum + s.bytesPerSecond) /
+                        samples.length;
+                return Column(children: [
+                  Text('Now: ${_bytes(widget.controller.latestSpeedBytesPerSecond.toInt())}/s'
+                      ' • Recent average: ${_bytes(average.toInt())}/s'),
+                  const SizedBox(height: 12),
+                  Expanded(child: active.isEmpty
+                      ? const Center(child: Text('No active or waiting downloads.'))
+                      : ListView.builder(
+                          itemCount: active.length,
+                          itemBuilder: (context, index) {
+                            final record = active[index];
+                            final health = record.waitingForNetwork
+                                ? 'Waiting for network'
+                                : record.isVerifying
+                                    ? 'Verifying SHA-256 before publishing'
+                                : record.isStalled
+                                    ? 'No bytes received for 15+ seconds'
+                                    : record.retryAt != null
+                                        ? 'Waiting for retry'
+                                        : record.lastProgressAt == null
+                                            ? 'Connecting' : 'Receiving / processing';
+                            return ListTile(
+                              dense: true,
+                              title: Text(record.fileName,
+                                  overflow: TextOverflow.ellipsis),
+                              subtitle: Text('$health • ${_bytes(record.downloadedBytes)}'
+                                  ' / ${_bytes(record.totalBytes)}\n'
+                                  '${_bytes(record.bytesPerSecond.toInt())}/s • '
+                                  'ETA ${_durationLabel(record.estimatedTimeRemaining)}'
+                                  ' • ${record.retryPolicy.name} retry'),
+                              isThreeLine: true,
+                            );
+                          },
+                        )),
+                ]);
+              },
+            ),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'))],
+        ),
+      );
 
   Future<void> _historyAction(String action) async {
     if (action == 'stats') {
@@ -535,6 +637,11 @@ class _DownloadHomeState extends State<DownloadHome> {
             ],
           ),
           actions: [
+            IconButton(
+              tooltip: 'Live monitoring and ETA',
+              icon: const Icon(Icons.monitor_heart_outlined),
+              onPressed: _monitoring,
+            ),
             PopupMenuButton<String>(
               tooltip: 'Download history backup and restore',
               icon: const Icon(Icons.history_edu_outlined),
@@ -687,7 +794,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 1.2.0 • Md Jahidul Islam',
+              child: Text('JDM 1.3.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -892,7 +999,11 @@ class _DownloadHomeState extends State<DownloadHome> {
                       record.status == DownloadStatus.queued)
                     Text(record.waitingForNetwork
                         ? 'Offline: checking again ${_whenString(record.retryAt!)}'
-                        : 'Auto retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}: ${_whenString(record.retryAt!)}',
+                        : 'Auto retry ${record.retryAttempts}/${widget.controller.retryLimitFor(record)}: ${_whenString(record.retryAt!)}',
+                        style: const TextStyle(fontSize: 11)),
+                  if (record.status == DownloadStatus.downloading)
+                    Text('${record.isVerifying ? 'Verifying SHA-256' : 'ETA: ${_durationLabel(record.estimatedTimeRemaining)}'}'
+                        '${record.isStalled ? ' • No bytes received for 15+ s' : ''}',
                         style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
@@ -949,12 +1060,13 @@ class _DownloadHomeState extends State<DownloadHome> {
         record.waitingForNetwork
             ? 'Waiting for network'
             : record.retryAt?.isAfter(DateTime.now()) == true
-            ? 'Retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}'
+            ? 'Retry ${record.retryAttempts}/${widget.controller.retryLimitFor(record)}'
             : record.scheduledAt?.isAfter(DateTime.now()) == true
                 ? 'Scheduled' : 'Queued',
         Colors.orange,
       ),
-      DownloadStatus.downloading => ('Downloading', Colors.blue),
+      DownloadStatus.downloading => (
+        record.isVerifying ? 'Verifying SHA-256' : 'Downloading', Colors.blue),
       DownloadStatus.paused => ('Paused', Colors.grey),
       DownloadStatus.completed => ('Completed', Colors.green),
       DownloadStatus.failed => ('Failed', Colors.red),
@@ -992,6 +1104,10 @@ class _DownloadHomeState extends State<DownloadHome> {
               record.status == DownloadStatus.failed ||
               record.status == DownloadStatus.queued)
             const PopupMenuItem(value: 'resume', child: Text('Resume / Retry')),
+          if (record.status == DownloadStatus.failed ||
+              record.status == DownloadStatus.paused)
+            const PopupMenuItem(value: 'restart',
+                child: Text('Restart from zero (discard partial)')),
           if (record.status == DownloadStatus.queued) ...[
             const PopupMenuItem(value: 'top', child: Text('Move to top of queue')),
             const PopupMenuItem(value: 'bottom', child: Text('Move to bottom of queue')),
@@ -1332,13 +1448,24 @@ class _SpeedGraphPainter extends CustomPainter {
 
 class _DownloadInput {
   const _DownloadInput(this.url, this.name, this.quality, this.scheduledAt,
-      this.category, this.alternateUrls);
+      this.category, this.alternateUrls, this.retryPolicy, this.expectedSha256);
   final String url;
   final String name;
   final VideoQuality quality;
   final DateTime? scheduledAt;
   final DownloadCategory? category;
   final List<String> alternateUrls;
+  final DownloadRetryPolicy retryPolicy;
+  final String? expectedSha256;
+}
+
+String _durationLabel(Duration? duration) {
+  if (duration == null) return 'Unknown';
+  if (duration.inSeconds == 0) return 'Finishing';
+  if (duration.inDays > 0) return '${duration.inDays}d ${duration.inHours % 24}h';
+  if (duration.inHours > 0) return '${duration.inHours}h ${duration.inMinutes % 60}m';
+  if (duration.inMinutes > 0) return '${duration.inMinutes}m ${duration.inSeconds % 60}s';
+  return '${duration.inSeconds}s';
 }
 
 String _whenString(DateTime value) {
@@ -1360,7 +1487,9 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
   final _url = TextEditingController();
   final _name = TextEditingController();
   final _mirrors = TextEditingController();
+  final _sha256 = TextEditingController();
   VideoQuality _quality = VideoQuality.highest;
+  DownloadRetryPolicy _retryPolicy = DownloadRetryPolicy.standard;
   DownloadCategory? _category;
   DateTime? _scheduledAt;
 
@@ -1396,6 +1525,7 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
     _url.dispose();
     _name.dispose();
     _mirrors.dispose();
+    _sha256.dispose();
     super.dispose();
   }
 
@@ -1480,6 +1610,46 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                     'Mirrors are for direct files/videos, not HLS or DASH.',
                     style: TextStyle(fontSize: 11)),
                 const SizedBox(height: 12),
+                TextFormField(
+                  controller: _sha256,
+                  decoration: const InputDecoration(
+                    labelText: 'Expected SHA-256 (optional)',
+                    hintText: '64 hexadecimal characters',
+                    prefixIcon: Icon(Icons.verified_user_outlined),
+                  ),
+                  maxLines: 2,
+                  minLines: 1,
+                  validator: (value) {
+                    final digest = value?.trim() ?? '';
+                    return digest.isEmpty || RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(digest)
+                        ? null : 'Enter a 64-character hexadecimal SHA-256';
+                  },
+                ),
+                const SizedBox(height: 8),
+                const Text('A supplied SHA-256 must match the fully downloaded '
+                    'file before it can be marked Completed. A mismatch '
+                    'retains temporary bytes for diagnostics.',
+                    style: TextStyle(fontSize: 11)),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<DownloadRetryPolicy>(
+                  initialValue: _retryPolicy,
+                  decoration: const InputDecoration(
+                    labelText: 'Automatic retry policy',
+                    prefixIcon: Icon(Icons.autorenew),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: DownloadRetryPolicy.standard,
+                        child: Text('Standard (global setting)')),
+                    DropdownMenuItem(value: DownloadRetryPolicy.extended,
+                        child: Text('Extended (up to 5 retries)')),
+                    DropdownMenuItem(value: DownloadRetryPolicy.never,
+                        child: Text('Never (manual retry only)')),
+                  ],
+                  onChanged: (policy) {
+                    if (policy != null) setState(() => _retryPolicy = policy);
+                  },
+                ),
+                const SizedBox(height: 12),
                 DropdownButtonFormField<VideoQuality>(
                   initialValue: _quality,
                   decoration: const InputDecoration(
@@ -1536,6 +1706,8 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                   _mirrors.text.split(RegExp(r'[\r\n]+'))
                       .map((value) => value.trim())
                       .where((value) => value.isNotEmpty).toList(),
+                  _retryPolicy,
+                  _sha256.text.trim().isEmpty ? null : _sha256.text.trim(),
                 ));
               }
             },

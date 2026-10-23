@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 12 (v1.2.0)**, a cross-platform HTTP(S)
+This repository contains **Milestone 13 (v1.3.0)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -362,8 +362,44 @@ installer for this milestone is `JDM-Setup-v1.1.0-Windows-x64.exe`.
   movement, bulk retry, measured throughput, completed/failed alert
   transitions, and browser bridge duplicate responses.
 
-The v1.2.0 Windows installer name is
-`JDM-Setup-v1.2.0-Windows-x64.exe`. As before, the installer and APK must be
+## New in Milestone 13 — SHA-256 integrity, retry policies and monitoring
+
+- **SHA-256 integrity:** Every fully downloaded file is hashed using a
+  streaming SHA-256 calculation before its temporary file becomes a completed
+  destination file. The Add URL dialog accepts an optional expected SHA-256
+  (exactly 64 hexadecimal characters, case-insensitive). A mismatch marks
+  the entry **Failed**, records the calculated digest and never publishes the
+  mismatching temporary file as a completed download. Existing completed
+  files are never overwritten. The calculated digest is preserved in the
+  download state for diagnostics.
+- **Clean restart:** Failed and paused items offer **Restart from zero** with
+  confirmation. The operation deletes only JDM-managed partial and segment
+  files, clears stale resume validators and queues a new transfer. It never
+  deletes an existing completed file. Resume / Retry still retains partial
+  bytes and their usual HTTP validation rules.
+- **Per-download retry policies:** Each new item can use **Standard** (the
+  app-wide 0–5 setting), **Extended** (up to 5 transient-error retries), or
+  **Never** (manual retry only, including no automatic reconnect or mirror
+  failover). These choices persist across restarts. Integrity mismatches,
+  invalid content and HTTP 4xx errors (except selected transient statuses)
+  are not automatically retried.
+- **Live monitoring:** A new toolbar action displays each active or waiting
+  download with measured throughput, downloaded bytes, a best-effort ETA,
+  retry policy and connection health. Diagnostics include SHA-256 values,
+  retry limit and latest progress. A download that reports no new bytes for
+  15 seconds is flagged as potentially stalled; this is informational and
+  does not forcibly terminate the transfer. ETA is marked unknown when
+  total size or a usable throughput estimate is unavailable.
+- Added local HTTP fixture tests for valid/mismatched hashes, preserved
+  partial files, clean restart, invalid digests, per-item retries and ETA.
+
+**Limitations:** The expected SHA-256 must come from a trusted source. A
+matching hash confirms downloaded bytes match that value, not that the source
+is harmless. Streaming HLS or DASH outputs are hashed after remux/assembly;
+an expected digest must therefore describe the resulting saved file bytes.
+
+The v1.3.0 Windows installer name is
+`JDM-Setup-v1.3.0-Windows-x64.exe`. As before, the installer and APK must be
 built through GitHub Actions; this source archive does not contain binaries.
 
 ### Browser extension setup on Windows

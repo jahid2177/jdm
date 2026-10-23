@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -28,6 +29,17 @@ class DownloadSpeedSample {
   const DownloadSpeedSample(this.recordedAt, this.bytesPerSecond);
   final DateTime recordedAt;
   final double bytesPerSecond;
+}
+
+class IntegrityMismatchException implements Exception {
+  const IntegrityMismatchException(this.expected, this.actual);
+  final String expected;
+  final String actual;
+
+  @override
+  String toString() => 'SHA-256 mismatch (expected $expected; got $actual). '
+      'The partial file was retained. Choose Restart from zero after '
+      'checking the expected hash and source.';
 }
 
 /// Streaming HTTP(S) downloader shared by Windows and Android.
@@ -126,6 +138,13 @@ class DownloadController extends ChangeNotifier {
       List.unmodifiable(_speedHistory);
   double get latestSpeedBytesPerSecond =>
       _speedHistory.isEmpty ? 0 : _speedHistory.last.bytesPerSecond;
+
+  int retryLimitFor(DownloadRecord record) => switch (record.retryPolicy) {
+        DownloadRetryPolicy.standard => maxAutomaticRetries,
+        DownloadRetryPolicy.extended => maxAutomaticRetries < 5
+            ? 5 : maxAutomaticRetries,
+        DownloadRetryPolicy.never => 0,
+      };
 
   String categoryDirectoryPath(DownloadCategory category) =>
       '${downloadDirectory.path}${Platform.pathSeparator}JDM'
@@ -266,8 +285,15 @@ class DownloadController extends ChangeNotifier {
     DateTime? scheduledAt,
     DownloadCategory? category,
     List<String> alternateUrls = const [],
+    DownloadRetryPolicy retryPolicy = DownloadRetryPolicy.standard,
+    String? expectedSha256,
     bool allowDuplicate = false,
   }) async {
+    final digest = expectedSha256?.trim().toLowerCase();
+    if (digest != null && digest.isNotEmpty &&
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(digest)) {
+      throw const FormatException('SHA-256 must contain exactly 64 hex characters.');
+    }
     final uri = Uri.tryParse(input.trim());
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty || uri.userInfo.isNotEmpty) {
@@ -326,6 +352,8 @@ class DownloadController extends ChangeNotifier {
       alternateUrls: mirrors,
       videoQuality: quality,
       scheduledAt: scheduledAt,
+      retryPolicy: retryPolicy,
+      expectedSha256: digest == null || digest.isEmpty ? null : digest,
     );
     _records.insert(0, record);
     notifyListeners();
@@ -417,7 +445,9 @@ class DownloadController extends ChangeNotifier {
     var cancelled = false;
     for (final record in _records) {
       if (record.status == DownloadStatus.queued &&
-          record.retryAt != null && record.retryAttempts >= retries) {
+          record.retryAt != null &&
+          !record.waitingForNetwork &&
+          record.retryAttempts >= retryLimitFor(record)) {
         record.status = DownloadStatus.failed;
         record.retryAt = null;
         cancelled = true;
@@ -660,6 +690,43 @@ class DownloadController extends ChangeNotifier {
     _pump();
   }
 
+  /// Discards only JDM-managed partial bytes and queues a clean download.
+  /// Completed files are never deleted or replaced by this action.
+  Future<bool> restartFromZero(String id) async {
+    final record = _find(id);
+    if (record == null || _activeIds.contains(id) ||
+        (record.status != DownloadStatus.failed &&
+            record.status != DownloadStatus.paused)) return false;
+    final part = _partialFile(record);
+    if (await part.exists()) await part.delete();
+    await SegmentedDownloader.deleteSegments(record);
+    record.segments.clear();
+    record.downloadedBytes = 0;
+    record.totalBytes = null;
+    record.etag = null;
+    record.lastModified = null;
+    record.hlsCompletedSegments = 0;
+    record.hlsTotalSegments = 0;
+    record.hlsCommittedBytes = 0;
+    record.hlsFingerprint = null;
+    record.actualSha256 = null;
+    record.usedConnections = 1;
+    record.activeMirrorIndex = 0;
+    record.waitingForNetwork = false;
+    record.reconnectChecks = 0;
+    record.retryAttempts = 0;
+    record.retryAt = null;
+    record.scheduledAt = null;
+    record.error = null;
+    record.bytesPerSecond = 0;
+    record.lastProgressAt = null;
+    record.status = DownloadStatus.queued;
+    notifyListeners();
+    await _save();
+    _pump();
+    return true;
+  }
+
   Future<void> remove(String id) async {
     final record = _find(id);
     if (record == null) return;
@@ -713,6 +780,8 @@ class DownloadController extends ChangeNotifier {
     record.status = DownloadStatus.downloading;
     record.error = null;
     record.retryAt = null;
+    record.isVerifying = false;
+    record.lastProgressAt = DateTime.now();
     notifyListeners();
     try {
       await _save();
@@ -735,6 +804,7 @@ class DownloadController extends ChangeNotifier {
           record.reconnectChecks = 0;
           record.status = DownloadStatus.queued;
         } else if (_autoResumeOnReconnectEnabled &&
+            record.retryPolicy != DownloadRetryPolicy.never &&
             _isConnectivityError(error)) {
           record.waitingForNetwork = true;
           record.reconnectChecks =
@@ -757,6 +827,7 @@ class DownloadController extends ChangeNotifier {
         }
       }
     } finally {
+      record.isVerifying = false;
       _clients.remove(record.id)?.close(force: true);
       _processes.remove(record.id);
       _activeIds.remove(record.id);
@@ -771,7 +842,7 @@ class DownloadController extends ChangeNotifier {
   }
 
   bool _canAutomaticallyRetry(DownloadRecord record, Object error) {
-    if (record.retryAttempts >= maxAutomaticRetries ||
+    if (record.retryAttempts >= retryLimitFor(record) ||
         (record.kind != DownloadKind.file &&
             record.kind != DownloadKind.directVideo)) {
       return false;
@@ -806,6 +877,7 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<bool> _tryNextMirror(DownloadRecord record, Object error) async {
+    if (record.retryPolicy == DownloadRetryPolicy.never) return false;
     if (record.kind != DownloadKind.file &&
         record.kind != DownloadKind.directVideo) return false;
     if (record.activeMirrorIndex >= record.alternateUrls.length) return false;
@@ -903,6 +975,7 @@ class DownloadController extends ChangeNotifier {
           isDownloading: () => record.status == DownloadStatus.downloading,
           rateLimiter: _rateLimiter,
           onProgress: () {
+            record.lastProgressAt = DateTime.now();
             final now = clock.elapsedMilliseconds;
             if (now - lastMillis < 500) return;
             final elapsed = now - lastMillis;
@@ -1036,6 +1109,7 @@ class DownloadController extends ChangeNotifier {
         await writer.writeFrom(bytes);
         record.downloadedBytes += bytes.length;
         final now = DateTime.now();
+        record.lastProgressAt = now;
         final elapsed = now.difference(lastNotify).inMilliseconds;
         if (elapsed >= 500) {
           record.bytesPerSecond =
@@ -1089,6 +1163,7 @@ class DownloadController extends ChangeNotifier {
         persist: _save,
         rateLimiter: _rateLimiter,
         onProgress: () {
+          record.lastProgressAt = DateTime.now();
           if (record.downloadedBytes < lastBytes) {
             lastBytes = record.downloadedBytes;
             lastMs = clock.elapsedMilliseconds;
@@ -1181,6 +1256,17 @@ class DownloadController extends ChangeNotifier {
     await previous;
     try {
       final size = await part.length();
+      // Hash the closed, fully assembled temporary file BEFORE publishing it
+      // as a completed download. A mismatch keeps the partial for diagnostics.
+      record.isVerifying = true;
+      notifyListeners();
+      final digest = (await sha256.bind(part.openRead()).first).toString();
+      record.actualSha256 = digest;
+      if (record.expectedSha256 != null &&
+          digest != record.expectedSha256!.toLowerCase()) {
+        throw IntegrityMismatchException(record.expectedSha256!, digest);
+      }
+      if (record.status != DownloadStatus.downloading) return;
       var destination = File(record.savePath);
       if (await destination.exists()) {
         final dot = record.fileName.lastIndexOf('.');
@@ -1198,6 +1284,8 @@ class DownloadController extends ChangeNotifier {
       record.downloadedBytes = size;
       record.totalBytes = size;
     } finally {
+      record.isVerifying = false;
+      notifyListeners();
       permission.complete();
     }
   }
