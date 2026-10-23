@@ -48,7 +48,9 @@ class SegmentedDownloader {
         return null;
       }
       final size = int.parse(match.group(3)!);
-      if (size <= 0) return null;
+      if (size <= 0) {
+        return null;
+      }
       return RangeProbe(
         size,
         response.headers.value(HttpHeaders.etagHeader),
@@ -66,7 +68,9 @@ class SegmentedDownloader {
   }
 
   static List<DownloadSegment> plan(int totalBytes, int connections) {
-    if (totalBytes <= 0) throw ArgumentError.value(totalBytes, 'totalBytes');
+    if (totalBytes <= 0) {
+      throw ArgumentError.value(totalBytes, 'totalBytes');
+    }
     final count = min(max(connections, 1), min(totalBytes, 16));
     final chunkSize = (totalBytes / count).ceil();
     final segments = <DownloadSegment>[];
@@ -129,7 +133,9 @@ class SegmentedDownloader {
     required void Function() onProgress,
     DownloadRateLimiter? rateLimiter,
   }) async {
-    if (!isDownloading() || segment.complete) return;
+    if (!isDownloading() || segment.complete) {
+      return;
+    }
     final file = segmentFile(record, segment);
     final start = segment.start + segment.downloadedBytes;
     final request = await client.getUrl(Uri.parse(record.activeUrl));
@@ -140,7 +146,9 @@ class SegmentedDownloader {
     final validator = RangeProbe(
       record.totalBytes!, record.etag, record.lastModified,
     ).validator;
-    if (validator != null) request.headers.set('If-Range', validator);
+    if (validator != null) {
+      request.headers.set('If-Range', validator);
+    }
     final response = await request.close();
     if (response.statusCode != HttpStatus.partialContent ||
         !_isIdentityEncoded(response)) {
@@ -167,11 +175,15 @@ class SegmentedDownloader {
     final writer = await file.open(mode: FileMode.append);
     try {
       await for (final bytes in response) {
-        if (!isDownloading()) break;
+        if (!isDownloading()) {
+          break;
+        }
         if (rateLimiter != null) {
           await rateLimiter.acquire(bytes.length, isActive: isDownloading);
         }
-        if (!isDownloading()) break;
+        if (!isDownloading()) {
+          break;
+        }
         if (segment.downloadedBytes + bytes.length > segment.length) {
           throw StateError('Received bytes outside segment ${segment.index}.');
         }
@@ -217,7 +229,9 @@ class SegmentedDownloader {
   }) async {
     for (final segment in record.segments) {
       final file = segmentFile(record, segment, basePath: basePath);
-      if (await file.exists()) await file.delete();
+      if (await file.exists()) {
+        await file.delete();
+      }
     }
   }
 }

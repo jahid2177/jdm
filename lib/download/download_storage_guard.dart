@@ -31,7 +31,9 @@ class DownloadStorageGuard {
     } catch (_) {
       available = null;
     }
-    if (available != null && available < 0) available = null;
+    if (available != null && available < 0) {
+      available = null;
+    }
     return DiskSpaceAssessment(
       freeBytes: available,
       neededBytes: needed,
@@ -86,7 +88,9 @@ class SystemFreeDiskBytes {
       // Accept only a drive letter. No user-controlled path or command is
       // interpolated into PowerShell. UNC paths return an unknown capacity.
       final match = RegExp(r'^([a-zA-Z]):[\\/]').firstMatch(destinationPath);
-      if (match == null) return null;
+      if (match == null) {
+        return null;
+      }
       final drive = '${match.group(1)!.toUpperCase()}:\\';
       final command = '[Console]::Out.Write('
           '([System.IO.DriveInfo]::new("$drive")).AvailableFreeSpace)';
@@ -94,7 +98,9 @@ class SystemFreeDiskBytes {
         final result = await Process.run('powershell.exe', [
           '-NoProfile', '-NonInteractive', '-Command', command,
         ]).timeout(const Duration(seconds: 6));
-        if (result.exitCode != 0) return null;
+        if (result.exitCode != 0) {
+          return null;
+        }
         return int.tryParse(result.stdout.toString().trim());
       } on FileSystemException {
         return null;

@@ -14,10 +14,14 @@ class DownloadScheduleWindow {
   final int weekdays;
 
   bool allows(DateTime time) {
-    if (!enabled) return true;
+    if (!enabled) {
+      return true;
+    }
     final minute = time.hour * 60 + time.minute;
     bool selected(int weekday) => (weekdays & (1 << (weekday - 1))) != 0;
-    if (startMinute == endMinute) return false;
+    if (startMinute == endMinute) {
+      return false;
+    }
     if (startMinute < endMinute) {
       return selected(time.weekday) &&
           minute >= startMinute && minute < endMinute;
@@ -36,7 +40,9 @@ class DownloadScheduleWindow {
   };
 
   factory DownloadScheduleWindow.fromJson(Object? value) {
-    if (value is! Map) return const DownloadScheduleWindow();
+    if (value is! Map) {
+      return const DownloadScheduleWindow();
+    }
     final data = Map<String, dynamic>.from(value);
     return DownloadScheduleWindow(
       enabled: data['enabled'] == true,

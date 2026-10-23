@@ -24,7 +24,9 @@ class WindowsTrayController with TrayListener, WindowListener {
     DownloadController controller,
     BrowserBridgeServer? bridge,
   ) async {
-    if (!Platform.isWindows) return null;
+    if (!Platform.isWindows) {
+      return null;
+    }
     final instance = WindowsTrayController._(controller, bridge);
     try {
       await windowManager.ensureInitialized();
@@ -78,7 +80,9 @@ class WindowsTrayController with TrayListener, WindowListener {
 
   @override
   void onWindowClose() {
-    if (!_exiting) unawaited(windowManager.hide());
+    if (!_exiting) {
+      unawaited(windowManager.hide());
+    }
   }
 
   @override
@@ -103,12 +107,16 @@ class WindowsTrayController with TrayListener, WindowListener {
   }
 
   Future<void> exitApplication() async {
-    if (_exiting) return;
+    if (_exiting) {
+      return;
+    }
     _exiting = true;
     try {
       await controller.pauseAll();
       await controller.waitForIdle();
-      if (bridge != null) await bridge!.close();
+      if (bridge != null) {
+        await bridge!.close();
+      }
       windowManager.removeListener(this);
       trayManager.removeListener(this);
       controller.removeListener(_onDownloadsChanged);

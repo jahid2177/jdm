@@ -16,7 +16,9 @@ class DownloadRateLimiter {
   int get bytesPerSecond => _bytesPerSecond;
 
   void setBytesPerSecond(int value) {
-    if (value < 0) throw ArgumentError.value(value, 'value');
+    if (value < 0) {
+      throw ArgumentError.value(value, 'value');
+    }
     _refill();
     _bytesPerSecond = value;
     // Allow a new limit a one-second burst; don't carry excess older credit.
@@ -36,11 +38,17 @@ class DownloadRateLimiter {
   }
 
   Future<void> acquire(int bytes, {required bool Function() isActive}) async {
-    if (bytes <= 0) return;
+    if (bytes <= 0) {
+      return;
+    }
     var remaining = bytes;
     while (remaining > 0) {
-      if (!isActive()) return;
-      if (_bytesPerSecond == 0) return;
+      if (!isActive()) {
+        return;
+      }
+      if (_bytesPerSecond == 0) {
+        return;
+      }
       _refill();
       final available = _tokens.floor();
       if (available > 0) {

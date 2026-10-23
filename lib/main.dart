@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -80,7 +79,9 @@ class _JdmAppState extends State<JdmApp> {
       _ => 'system',
     };
     await widget.controller.setThemePreference(next);
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
@@ -196,7 +197,9 @@ class _DownloadHomeState extends State<DownloadHome>
     _appVisible = state == AppLifecycleState.resumed;
     if (_appVisible && _pendingClipboardUrl != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_showClipboardSuggestion());
+        if (mounted) {
+          unawaited(_showClipboardSuggestion());
+        }
       });
     }
   }
@@ -204,24 +207,36 @@ class _DownloadHomeState extends State<DownloadHome>
   Future<void> _inspectClipboard({bool manual = false}) async {
     try {
       final text = (await Clipboard.getData('text/plain'))?.text;
-      if (!mounted || text == null) return;
-      if (!manual && text == _lastClipboardText) return;
+      if (!mounted || text == null) {
+        return;
+      }
+      if (!manual && text == _lastClipboardText) {
+        return;
+      }
       _lastClipboardText = text;
       final candidate = ClipboardLinkDetector.firstValidLink(text);
       if (candidate == null) {
-        if (manual) _message('No public HTTP(S) URL found on clipboard.');
+        if (manual) {
+          _message('No public HTTP(S) URL found on clipboard.');
+        }
         return;
       }
       _pendingClipboardUrl = candidate;
-      if (manual || _appVisible) await _showClipboardSuggestion();
+      if (manual || _appVisible) {
+        await _showClipboardSuggestion();
+      }
     } catch (error) {
-      if (manual && mounted) _message('Clipboard is unavailable: $error');
+      if (manual && mounted) {
+        _message('Clipboard is unavailable: $error');
+      }
     }
   }
 
   Future<void> _showClipboardSuggestion() async {
     if (!mounted || _clipboardDialogOpen || !_appVisible ||
-        _pendingClipboardUrl == null) return;
+        _pendingClipboardUrl == null) {
+      return;
+    }
     final candidate = _pendingClipboardUrl!;
     _pendingClipboardUrl = null;
     _clipboardDialogOpen = true;
@@ -242,11 +257,17 @@ class _DownloadHomeState extends State<DownloadHome>
       if (accepted == true) {
         try {
           await widget.controller.addUrl(candidate);
-          if (mounted) _message('Clipboard link added to queue.');
+          if (mounted) {
+            _message('Clipboard link added to queue.');
+          }
         } on DuplicateDownloadException {
-          if (mounted) _message('This link is already in your download list.');
+          if (mounted) {
+            _message('This link is already in your download list.');
+          }
         } catch (error) {
-          if (mounted) _message('Cannot add clipboard URL: $error');
+          if (mounted) {
+            _message('Cannot add clipboard URL: $error');
+          }
         }
       }
     } finally {
@@ -257,7 +278,9 @@ class _DownloadHomeState extends State<DownloadHome>
   void _onAlerts() {
     for (final alert in _alertTracker.takeNewAlerts(widget.controller.downloads)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted) {
+          return;
+        }
         final message = alert.type == DownloadAlertType.completed
             ? 'Download complete: ${alert.record.fileName}'
             : 'Download failed: ${alert.record.fileName}. Open Diagnostics for details.';
@@ -279,7 +302,9 @@ class _DownloadHomeState extends State<DownloadHome>
       context: context,
       builder: (_) => const _AddDownloadDialog(),
     );
-    if (input == null) return;
+    if (input == null) {
+      return;
+    }
     try {
       await widget.controller.addUrl(
         input.url,
@@ -292,7 +317,9 @@ class _DownloadHomeState extends State<DownloadHome>
         expectedSha256: input.expectedSha256,
       );
     } on DuplicateDownloadException catch (duplicate) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -308,7 +335,9 @@ class _DownloadHomeState extends State<DownloadHome>
           ],
         ),
       );
-      if (confirmed != true) return;
+      if (confirmed != true) {
+        return;
+      }
       try {
         await widget.controller.addUrl(input.url, fileName: input.name,
             quality: input.quality, scheduledAt: input.scheduledAt,
@@ -317,10 +346,14 @@ class _DownloadHomeState extends State<DownloadHome>
             expectedSha256: input.expectedSha256,
             allowDuplicate: true);
       } catch (error) {
-        if (mounted) _message('Duplicate download could not start: $error');
+        if (mounted) {
+          _message('Duplicate download could not start: $error');
+        }
       }
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Download could not start: $error')),
       );
@@ -346,7 +379,9 @@ class _DownloadHomeState extends State<DownloadHome>
         ],
       ),
     );
-    if (accepted == true) await widget.controller.remove(record.id);
+    if (accepted == true) {
+      await widget.controller.remove(record.id);
+    }
   }
 
   Future<void> _handle(DownloadRecord record, String action) async {
@@ -370,14 +405,20 @@ class _DownloadHomeState extends State<DownloadHome>
           ],
         ),
       );
-      if (confirmed != true) return;
+      if (confirmed != true) {
+        return;
+      }
       try {
         final restarted = await widget.controller.restartFromZero(record.id);
-        if (mounted) _message(restarted
+        if (mounted) {
+          _message(restarted
             ? 'Clean download queued.'
             : 'Pause or wait for this download to stop first.');
+        }
       } catch (error) {
-        if (mounted) _message('Could not restart from zero: $error');
+        if (mounted) {
+          _message('Could not restart from zero: $error');
+        }
       }
       return;
     }
@@ -387,11 +428,15 @@ class _DownloadHomeState extends State<DownloadHome>
       );
       try {
         final moved = await widget.controller.changeCategory(record.id, category);
-        if (mounted) _message(moved
+        if (mounted) {
+          _message(moved
             ? 'Moved to ${category.folder} category.'
             : 'Pause or finish the current download before moving its folder.');
+        }
       } catch (error) {
-        if (mounted) _message('Category move failed: $error');
+        if (mounted) {
+          _message('Category move failed: $error');
+        }
       }
       return;
     }
@@ -402,16 +447,32 @@ class _DownloadHomeState extends State<DownloadHome>
     }
     if (action == 'copyUrl') {
       await Clipboard.setData(ClipboardData(text: record.url));
-      if (mounted) _message('Download URL copied to clipboard.');
+      if (mounted) {
+        _message('Download URL copied to clipboard.');
+      }
       return;
     }
-    if (action == 'pause') await widget.controller.pause(record.id);
-    if (action == 'resume') await widget.controller.resume(record.id);
-    if (action == 'earlier') await widget.controller.moveEarlier(record.id);
-    if (action == 'later') await widget.controller.moveLater(record.id);
-    if (action == 'top') await widget.controller.moveToFront(record.id);
-    if (action == 'bottom') await widget.controller.moveToBack(record.id);
-    if (action == 'remove') await _remove(record);
+    if (action == 'pause') {
+      await widget.controller.pause(record.id);
+    }
+    if (action == 'resume') {
+      await widget.controller.resume(record.id);
+    }
+    if (action == 'earlier') {
+      await widget.controller.moveEarlier(record.id);
+    }
+    if (action == 'later') {
+      await widget.controller.moveLater(record.id);
+    }
+    if (action == 'top') {
+      await widget.controller.moveToFront(record.id);
+    }
+    if (action == 'bottom') {
+      await widget.controller.moveToBack(record.id);
+    }
+    if (action == 'remove') {
+      await _remove(record);
+    }
     if (action == 'path' && mounted) {
       await showDialog<void>(
         context: context,
@@ -527,7 +588,9 @@ class _DownloadHomeState extends State<DownloadHome>
       );
 
   Future<void> _runFileAction(DownloadRecord record, String action) async {
-    if (!_busyFileActions.add(record.id)) return;
+    if (!_busyFileActions.add(record.id)) {
+      return;
+    }
     setState(() {});
     try {
       switch (action) {
@@ -541,20 +604,28 @@ class _DownloadHomeState extends State<DownloadHome>
           await CompletedFileActions.revealInWindowsExplorer(record);
           break;
         case 'export':
-          if (mounted) _message('Exporting to Downloads/JDM…');
+          if (mounted) {
+            _message('Exporting to Downloads/JDM…');
+          }
           if (widget.completion case final AndroidCompletionCoordinator coordinator) {
             await coordinator.export(record, force: true);
           } else {
             await CompletedFileActions.exportToAndroidDownloads(record);
           }
-          if (mounted) _message('Saved to Downloads/JDM: ${record.fileName}');
+          if (mounted) {
+            _message('Saved to Downloads/JDM: ${record.fileName}');
+          }
           break;
       }
     } catch (failure) {
-      if (mounted) _message('File action failed: $failure');
+      if (mounted) {
+        _message('File action failed: $failure');
+      }
     } finally {
       _busyFileActions.remove(record.id);
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
@@ -569,7 +640,9 @@ class _DownloadHomeState extends State<DownloadHome>
       await widget.controller.resumeAll();
     } else if (action == 'retryFailed') {
       final count = await widget.controller.retryAllFailed();
-      if (mounted) _message('Queued $count failed downloads for retry.');
+      if (mounted) {
+        _message('Queued $count failed downloads for retry.');
+      }
     }
   }
 
@@ -587,7 +660,9 @@ class _DownloadHomeState extends State<DownloadHome>
   Future<void> _recoverInterrupted() async {
     final count = widget.controller.interruptedCount;
     if (count == 0) {
-      if (mounted) _message('No interrupted downloads need recovery.');
+      if (mounted) {
+        _message('No interrupted downloads need recovery.');
+      }
       return;
     }
     final confirmed = await showDialog<bool>(
@@ -607,14 +682,20 @@ class _DownloadHomeState extends State<DownloadHome>
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true) {
+      return;
+    }
     final recovered = await widget.controller.recoverInterruptedDownloads();
-    if (mounted) _message('Queued $recovered interrupted downloads for recovery.');
+    if (mounted) {
+      _message('Queued $recovered interrupted downloads for recovery.');
+    }
   }
 
   Future<void> _refreshDiskHealth() async {
     for (final record in widget.controller.downloads) {
-      if (record.status == DownloadStatus.completed) continue;
+      if (record.status == DownloadStatus.completed) {
+        continue;
+      }
       try {
         await widget.controller.inspectDiskSpace(record,
             assemblyBytes: record.segments.isNotEmpty
@@ -739,19 +820,27 @@ class _DownloadHomeState extends State<DownloadHome>
           allowedExtensions: ['json'],
           bytes: bytes,
         );
-        if (selected == null) return;
+        if (selected == null) {
+          return;
+        }
         // The Android Storage Access Framework writes the supplied bytes.
         // On Windows, also persist to the user-selected filesystem path.
         if (Platform.isWindows) {
           await File(selected).writeAsBytes(bytes, flush: true);
         }
-        if (mounted) _message('History JSON exported. Keep it private: URLs may contain tokens.');
+        if (mounted) {
+          _message('History JSON exported. Keep it private: URLs may contain tokens.');
+        }
       } catch (error) {
-        if (mounted) _message('History export failed: $error');
+        if (mounted) {
+          _message('History export failed: $error');
+        }
       }
       return;
     }
-    if (action != 'restore') return;
+    if (action != 'restore') {
+      return;
+    }
     try {
       final picked = await FilePicker.platform.pickFiles(
         dialogTitle: 'Select a JDM history backup',
@@ -759,7 +848,9 @@ class _DownloadHomeState extends State<DownloadHome>
         allowedExtensions: ['json'],
         withData: true,
       );
-      if (picked == null || picked.files.isEmpty) return;
+      if (picked == null || picked.files.isEmpty) {
+        return;
+      }
       final selected = picked.files.single;
       if (selected.size > DownloadHistoryBackup.maxJsonCharacters) {
         throw const FormatException('The history backup is too large.');
@@ -774,7 +865,9 @@ class _DownloadHomeState extends State<DownloadHome>
       }
       final json = utf8.decode(bytes);
       final entries = DownloadHistoryBackup.decode(json);
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -791,14 +884,18 @@ class _DownloadHomeState extends State<DownloadHome>
           ],
         ),
       );
-      if (confirmed != true) return;
+      if (confirmed != true) {
+        return;
+      }
       final restored = await widget.controller.restoreHistoryJson(json);
       if (mounted) {
         _message('Restored ${restored.restored} paused entries; '
             '${restored.skipped} duplicates skipped.');
       }
     } catch (error) {
-      if (mounted) _message('History restore failed: $error');
+      if (mounted) {
+        _message('History restore failed: $error');
+      }
     }
   }
 
@@ -1408,24 +1505,32 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
         endMinute: _end.hour * 60 + _end.minute,
         weekdays: _days,
       ));
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Download time window saved.')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Download time window saved.')));
+      }
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Invalid download window: $error')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Invalid download window: $error')));
+      }
     }
   }
 
   Future<void> _toggleAndroidBackground(bool enabled) async {
     final background = widget.background;
-    if (background == null) return;
+    if (background == null) {
+      return;
+    }
     setState(() {
       _changingBackground = true;
       _backgroundFeedback = null;
     });
     try {
       final success = await background.changeEnabled(enabled);
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _backgroundFeedback = success
             ? enabled
@@ -1434,12 +1539,16 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
             : background.error ?? 'Background service was not enabled.';
       });
     } finally {
-      if (mounted) setState(() => _changingBackground = false);
+      if (mounted) {
+        setState(() => _changingBackground = false);
+      }
     }
   }
 
   Future<void> _toggleAutomaticExport(bool enabled) async {
-    if (widget.completion == null) return;
+    if (widget.completion == null) {
+      return;
+    }
     setState(() {
       _changingCompletionPreference = true;
       _completionFeedback = null;
@@ -1458,12 +1567,16 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     } catch (error) {
       _completionFeedback = 'Could not update Downloads export: $error';
     } finally {
-      if (mounted) setState(() => _changingCompletionPreference = false);
+      if (mounted) {
+        setState(() => _changingCompletionPreference = false);
+      }
     }
   }
 
   Future<void> _toggleCompletionNotifications(bool enabled) async {
-    if (widget.completion == null) return;
+    if (widget.completion == null) {
+      return;
+    }
     setState(() {
       _changingCompletionPreference = true;
       _completionFeedback = null;
@@ -1482,7 +1595,9 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     } catch (error) {
       _completionFeedback = 'Could not update notification settings: $error';
     } finally {
-      if (mounted) setState(() => _changingCompletionPreference = false);
+      if (mounted) {
+        setState(() => _changingCompletionPreference = false);
+      }
     }
   }
 
@@ -1507,7 +1622,9 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                         ))
                     .toList(),
                 onChanged: (value) async {
-                  if (value == null) return;
+                  if (value == null) {
+                    return;
+                  }
                   setState(() => _limit = value);
                   await widget.controller.setSpeedLimitKibPerSecond(value);
                 },
@@ -1613,7 +1730,9 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                   child: Text(value == 0 ? 'Disabled' : '$value retries'),
                 )),
                 onChanged: (value) async {
-                  if (value == null) return;
+                  if (value == null) {
+                    return;
+                  }
                   setState(() => _retries = value);
                   await widget.controller.setMaxAutomaticRetries(value);
                 },
@@ -1706,7 +1825,9 @@ String _kindLabel(DownloadKind kind) => switch (kind) {
     };
 
 String _bytes(int? size) {
-  if (size == null) return 'Unknown';
+  if (size == null) {
+    return 'Unknown';
+  }
   const names = ['B', 'KB', 'MB', 'GB', 'TB'];
   var value = size.toDouble();
   var index = 0;
@@ -1725,7 +1846,9 @@ class _SpeedGraphPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (size.width <= 0 || size.height <= 0) return;
+    if (size.width <= 0 || size.height <= 0) {
+      return;
+    }
     final guide = Paint()
       ..color = color.withAlpha(36)
       ..strokeWidth = 1;
@@ -1733,7 +1856,9 @@ class _SpeedGraphPainter extends CustomPainter {
         Offset(size.width, size.height - 2), guide);
     canvas.drawLine(Offset(0, size.height / 2),
         Offset(size.width, size.height / 2), guide);
-    if (samples.isEmpty) return;
+    if (samples.isEmpty) {
+      return;
+    }
     final peak = samples.fold<double>(1, (maximum, sample) =>
         sample.bytesPerSecond > maximum ? sample.bytesPerSecond : maximum);
     // Display the last minute of throughput, newest value on the right.
@@ -1775,11 +1900,21 @@ class _DownloadInput {
 }
 
 String _durationLabel(Duration? duration) {
-  if (duration == null) return 'Unknown';
-  if (duration.inSeconds == 0) return 'Finishing';
-  if (duration.inDays > 0) return '${duration.inDays}d ${duration.inHours % 24}h';
-  if (duration.inHours > 0) return '${duration.inHours}h ${duration.inMinutes % 60}m';
-  if (duration.inMinutes > 0) return '${duration.inMinutes}m ${duration.inSeconds % 60}s';
+  if (duration == null) {
+    return 'Unknown';
+  }
+  if (duration.inSeconds == 0) {
+    return 'Finishing';
+  }
+  if (duration.inDays > 0) {
+    return '${duration.inDays}d ${duration.inHours % 24}h';
+  }
+  if (duration.inHours > 0) {
+    return '${duration.inHours}h ${duration.inMinutes % 60}m';
+  }
+  if (duration.inMinutes > 0) {
+    return '${duration.inMinutes}m ${duration.inSeconds % 60}s';
+  }
   return '${duration.inSeconds}s';
 }
 
@@ -1816,14 +1951,18 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
       firstDate: DateTime(now.year, now.month, now.day),
       lastDate: now.add(const Duration(days: 365)),
     );
-    if (!mounted || day == null) return;
+    if (!mounted || day == null) {
+      return;
+    }
     final time = await showTimePicker(
       context: context,
       initialTime: _scheduledAt == null
           ? TimeOfDay.fromDateTime(now.add(const Duration(minutes: 10)))
           : TimeOfDay.fromDateTime(_scheduledAt!),
     );
-    if (!mounted || time == null) return;
+    if (!mounted || time == null) {
+      return;
+    }
     final selection = DateTime(day.year, day.month, day.day,
         time.hour, time.minute);
     if (!selection.isAfter(DateTime.now())) {
@@ -1910,12 +2049,16 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                     final urls = (text ?? '').split(RegExp(r'[\r\n]+'))
                         .map((value) => value.trim())
                         .where((value) => value.isNotEmpty).toList();
-                    if (urls.length > 5) return 'Use at most 5 mirrors';
+                    if (urls.length > 5) {
+                      return 'Use at most 5 mirrors';
+                    }
                     if (urls.any((value) {
                       final uri = Uri.tryParse(value);
                       return uri == null || !{'http', 'https'}.contains(uri.scheme) ||
                           uri.host.isEmpty || uri.userInfo.isNotEmpty;
-                    })) return 'Every mirror needs a valid HTTP(S) URL';
+                    })) {
+                      return 'Every mirror needs a valid HTTP(S) URL';
+                    }
                     return null;
                   },
                 ),
@@ -1961,7 +2104,9 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                         child: Text('Never (manual retry only)')),
                   ],
                   onChanged: (policy) {
-                    if (policy != null) setState(() => _retryPolicy = policy);
+                    if (policy != null) {
+                      setState(() => _retryPolicy = policy);
+                    }
                   },
                 ),
                 const SizedBox(height: 12),
@@ -1980,7 +2125,9 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                         child: Text('Lowest available')),
                   ],
                   onChanged: (quality) {
-                    if (quality != null) setState(() => _quality = quality);
+                    if (quality != null) {
+                      setState(() => _quality = quality);
+                    }
                   },
                 ),
                 const SizedBox(height: 12),

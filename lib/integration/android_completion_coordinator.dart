@@ -103,7 +103,9 @@ class AndroidCompletionCoordinator {
       return Future.value(uri);
     }
     final pending = _activeExports[record.id];
-    if (pending != null) return pending;
+    if (pending != null) {
+      return pending;
+    }
     final task = _exportAndPersist(record);
     _activeExports[record.id] = task;
     task.then<void>((_) {

@@ -68,7 +68,9 @@ class FfmpegMuxer {
     required bool Function() isActive,
   }) async {
     // FFmpeg cannot append to an interrupted MP4. A retry starts fresh.
-    if (await output.exists()) await output.delete();
+    if (await output.exists()) {
+      await output.delete();
+    }
     final process = await Process.start(
       executable,
       arguments(source, output.path),
@@ -77,13 +79,17 @@ class FfmpegMuxer {
     onStart(process);
     var errors = '';
     final stderr = process.stderr.transform(utf8.decoder).listen((chunk) {
-      errors = '${errors}$chunk';
-      if (errors.length > 1800) errors = errors.substring(errors.length - 1800);
+      errors = '$errors$chunk';
+      if (errors.length > 1800) {
+        errors = errors.substring(errors.length - 1800);
+      }
     });
     try {
       await process.stdout.drain<void>();
       final exitCode = await process.exitCode;
-      if (!isActive()) return;
+      if (!isActive()) {
+        return;
+      }
       if (exitCode != 0) {
         throw StateError('FFmpeg exited with code $exitCode: ${errors.trim()}');
       }

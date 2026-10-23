@@ -16,7 +16,9 @@ extension DownloadCategoryDetails on DownloadCategory {
       };
 
   static DownloadCategory infer(String fileName, DownloadKind kind) {
-    if (kind != DownloadKind.file) return DownloadCategory.videos;
+    if (kind != DownloadKind.file) {
+      return DownloadCategory.videos;
+    }
     final dot = fileName.lastIndexOf('.');
     final extension = dot < 0 ? '' : fileName.substring(dot + 1).toLowerCase();
     if (['mp4', 'mkv', 'mov', 'avi', 'webm', 'm3u8', 'ts'].contains(extension)) {
@@ -153,9 +155,13 @@ class DownloadRecord {
   Duration? get estimatedTimeRemaining {
     final total = totalBytes;
     if (status != DownloadStatus.downloading || total == null ||
-        bytesPerSecond <= 0 || total < downloadedBytes) return null;
+        bytesPerSecond <= 0 || total < downloadedBytes) {
+      return null;
+    }
     final seconds = ((total - downloadedBytes) / bytesPerSecond).ceil();
-    if (seconds > 365 * 24 * 3600) return null;
+    if (seconds > 365 * 24 * 3600) {
+      return null;
+    }
     return Duration(seconds: seconds);
   }
 

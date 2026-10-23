@@ -8,15 +8,23 @@ class VideoSourceDetector {
         mediaType == 'application/x-mpegurl') {
       return DownloadKind.hls;
     }
-    if (mediaType == 'application/dash+xml') return DownloadKind.dash;
+    if (mediaType == 'application/dash+xml') {
+      return DownloadKind.dash;
+    }
     final path = uri.path.toLowerCase();
-    if (path.endsWith('.m3u8')) return DownloadKind.hls;
-    if (path.endsWith('.mpd')) return DownloadKind.dash;
+    if (path.endsWith('.m3u8')) {
+      return DownloadKind.hls;
+    }
+    if (path.endsWith('.mpd')) {
+      return DownloadKind.dash;
+    }
     if (mediaType != null && mediaType.startsWith('video/')) {
       return DownloadKind.directVideo;
     }
     for (final extension in ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.ts']) {
-      if (path.endsWith(extension)) return DownloadKind.directVideo;
+      if (path.endsWith(extension)) {
+        return DownloadKind.directVideo;
+      }
     }
     return DownloadKind.file;
   }

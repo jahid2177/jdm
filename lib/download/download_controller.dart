@@ -272,7 +272,9 @@ class DownloadController extends ChangeNotifier {
     await downloadDirectory.create(recursive: true);
     await _loadSettings();
     for (final file in [_stateFile, File('${_stateFile.path}.bak')]) {
-      if (!await file.exists()) continue;
+      if (!await file.exists()) {
+        continue;
+      }
       try {
         final data = jsonDecode(await file.readAsString()) as List<dynamic>;
         _records
@@ -306,7 +308,9 @@ class DownloadController extends ChangeNotifier {
           }
         } else {
           final part = _partialFile(record);
-          if (await part.exists()) record.downloadedBytes = await part.length();
+          if (await part.exists()) {
+            record.downloadedBytes = await part.length();
+          }
         }
       }
     }
@@ -314,7 +318,9 @@ class DownloadController extends ChangeNotifier {
     _speedTimer ??= Timer.periodic(speedSampleInterval, (_) => _sampleSpeed());
     _windowTimer ??= Timer.periodic(scheduleCheckInterval,
         (_) => unawaited(evaluateDownloadWindow()));
-    if (recoveredState) await _save();
+    if (recoveredState) {
+      await _save();
+    }
     await evaluateDownloadWindow();
   }
 
@@ -323,7 +329,9 @@ class DownloadController extends ChangeNotifier {
     final next = <String, int>{};
     var bytes = 0;
     for (final record in _records) {
-      if (record.status != DownloadStatus.downloading) continue;
+      if (record.status != DownloadStatus.downloading) {
+        continue;
+      }
       final previous = _lastSampledBytes[record.id];
       if (previous != null && record.downloadedBytes >= previous) {
         bytes += record.downloadedBytes - previous;
@@ -336,8 +344,12 @@ class DownloadController extends ChangeNotifier {
     final elapsed = speedSampleInterval.inMicroseconds / 1000000;
     _speedHistory.add(DownloadSpeedSample(
         DateTime.now(), elapsed <= 0 ? 0.0 : bytes / elapsed));
-    if (_speedHistory.length > 60) _speedHistory.removeAt(0);
-    if (next.isNotEmpty || previousSpeed > 0) notifyListeners();
+    if (_speedHistory.length > 60) {
+      _speedHistory.removeAt(0);
+    }
+    if (next.isNotEmpty || previousSpeed > 0) {
+      notifyListeners();
+    }
   }
 
   static String safeName(String value) {
@@ -345,7 +357,9 @@ class DownloadController extends ChangeNotifier {
         .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
         .replaceAll(RegExp(r'[. ]+$'), '')
         .trim();
-    if (name.isEmpty || name == '.' || name == '..') name = 'download';
+    if (name.isEmpty || name == '.' || name == '..') {
+      name = 'download';
+    }
     final stem = name.split('.').first.toUpperCase();
     if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$').hasMatch(stem)) {
       name = '_$name';
@@ -446,19 +460,29 @@ class DownloadController extends ChangeNotifier {
   Future<bool> changeCategory(String id, DownloadCategory category) async {
     final record = _find(id);
     if (record == null || _activeIds.contains(id) ||
-        record.status == DownloadStatus.downloading) return false;
-    if (record.category == category) return true;
+        record.status == DownloadStatus.downloading) {
+      return false;
+    }
+    if (record.category == category) {
+      return true;
+    }
     if (record.status != DownloadStatus.completed &&
-        (record.downloadedBytes != 0 || record.segments.isNotEmpty)) return false;
+        (record.downloadedBytes != 0 || record.segments.isNotEmpty)) {
+      return false;
+    }
     if (record.status != DownloadStatus.completed &&
         await _partialFile(record).exists() &&
-        await _partialFile(record).length() > 0) return false;
+        await _partialFile(record).length() > 0) {
+      return false;
+    }
     final folder = Directory(categoryDirectoryPath(category));
     await folder.create(recursive: true);
     var destination = File('${folder.path}${Platform.pathSeparator}${record.fileName}');
     if (record.status == DownloadStatus.completed) {
       final existing = File(record.savePath);
-      if (!await existing.exists()) return false;
+      if (!await existing.exists()) {
+        return false;
+      }
       var suffix = 1;
       while (await destination.exists()) {
         final dot = record.fileName.lastIndexOf('.');
@@ -507,7 +531,9 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<void> setMaximumActiveDownloads(int value) async {
-    if (value < 1 || value > 5) throw RangeError.range(value, 1, 5);
+    if (value < 1 || value > 5) {
+      throw RangeError.range(value, 1, 5);
+    }
     maxSimultaneous = value;
     notifyListeners();
     await _saveSettings();
@@ -517,7 +543,9 @@ class DownloadController extends ChangeNotifier {
   /// Prevents one busy server from occupying every queue slot. Existing
   /// transfers finish; the new limit applies to the next scheduled starts.
   Future<void> setMaximumActivePerHost(int value) async {
-    if (value < 1 || value > 5) throw RangeError.range(value, 1, 5);
+    if (value < 1 || value > 5) {
+      throw RangeError.range(value, 1, 5);
+    }
     maxActivePerHost = value;
     notifyListeners();
     await _saveSettings();
@@ -554,7 +582,9 @@ class DownloadController extends ChangeNotifier {
   /// Evaluated while JDM runs. Only scheduler-paused tasks auto-resume;
   /// manual pauses and interrupted shutdown recovery always require consent.
   Future<void> evaluateDownloadWindow() async {
-    if (_evaluatingWindow) return;
+    if (_evaluatingWindow) {
+      return;
+    }
     _evaluatingWindow = true;
     try {
       final permitted = scheduleWindow.allows(_now());
@@ -603,7 +633,9 @@ class DownloadController extends ChangeNotifier {
     }
     notifyListeners();
     await _saveSettings();
-    if (cancelled) await _save();
+    if (cancelled) {
+      await _save();
+    }
     _pump();
   }
 
@@ -638,8 +670,12 @@ class DownloadController extends ChangeNotifier {
     String? error,
   }) async {
     final record = _find(id);
-    if (record == null || record.status != DownloadStatus.completed) return;
-    if (uri != null) record.androidDownloadsUri = uri;
+    if (record == null || record.status != DownloadStatus.completed) {
+      return;
+    }
+    if (uri != null) {
+      record.androidDownloadsUri = uri;
+    }
     record.androidExportError = error;
     notifyListeners();
     await _save();
@@ -653,7 +689,9 @@ class DownloadController extends ChangeNotifier {
         continue;
       }
       if (record.status != DownloadStatus.downloading &&
-          record.status != DownloadStatus.queued) continue;
+          record.status != DownloadStatus.queued) {
+        continue;
+      }
       record.status = DownloadStatus.paused;
       record.pausedByScheduler = false;
       record.waitingForNetwork = false;
@@ -701,16 +739,22 @@ class DownloadController extends ChangeNotifier {
 
   Future<bool> _moveQueuedToEdge(String id, {required bool first}) async {
     final record = _find(id);
-    if (record == null || record.status != DownloadStatus.queued) return false;
+    if (record == null || record.status != DownloadStatus.queued) {
+      return false;
+    }
     final position = _records.indexOf(record);
     // The first queued job in _records.reversed runs first.
     final queued = [
       for (var index = 0; index < _records.length; index++)
         if (_records[index].status == DownloadStatus.queued) index,
     ];
-    if (queued.isEmpty) return false;
+    if (queued.isEmpty) {
+      return false;
+    }
     final destination = first ? queued.last : queued.first;
-    if (position == destination) return true;
+    if (position == destination) {
+      return true;
+    }
     _records.removeAt(position);
     _records.insert(destination, record);
     notifyListeners();
@@ -724,7 +768,9 @@ class DownloadController extends ChangeNotifier {
   Future<int> retryAllFailed() async {
     var count = 0;
     for (final record in _records) {
-      if (record.status != DownloadStatus.failed) continue;
+      if (record.status != DownloadStatus.failed) {
+        continue;
+      }
       record.status = DownloadStatus.queued;
       record.error = null;
       record.retryAt = null;
@@ -744,7 +790,9 @@ class DownloadController extends ChangeNotifier {
   Future<bool> _reorderQueued(String id, {required bool towardFront}) async {
     final position = _records.indexWhere((record) => record.id == id &&
         record.status == DownloadStatus.queued);
-    if (position < 0) return false;
+    if (position < 0) {
+      return false;
+    }
     // The stored list has newest first; _pump processes its reverse.
     final step = towardFront ? 1 : -1;
     var cursor = position + step;
@@ -763,10 +811,14 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<void> _loadSettings() async {
-    if (!await _settingsFile.exists()) return;
+    if (!await _settingsFile.exists()) {
+      return;
+    }
     try {
       final raw = jsonDecode(await _settingsFile.readAsString());
-      if (raw is! Map) return;
+      if (raw is! Map) {
+        return;
+      }
       final settings = Map<String, dynamic>.from(raw);
       final speed = (settings['speedLimitKibPerSecond'] as num?)?.toInt() ?? 0;
       _rateLimiter.setBytesPerSecond(speed.clamp(0, 10240).toInt() * 1024);
@@ -814,7 +866,9 @@ class DownloadController extends ChangeNotifier {
         .then((_) async {
       final temp = File('${_settingsFile.path}.tmp');
       await temp.writeAsString(json, flush: true);
-      if (await _settingsFile.exists()) await _settingsFile.delete();
+      if (await _settingsFile.exists()) {
+        await _settingsFile.delete();
+      }
       await temp.rename(_settingsFile.path);
     });
     return _pendingSettingsSave;
@@ -833,7 +887,9 @@ class DownloadController extends ChangeNotifier {
       return;
     }
     if (record == null || (record.status != DownloadStatus.downloading &&
-        record.status != DownloadStatus.queued)) return;
+        record.status != DownloadStatus.queued)) {
+      return;
+    }
     record.status = DownloadStatus.paused;
     record.pausedByScheduler = false;
     record.waitingForNetwork = false;
@@ -847,9 +903,13 @@ class DownloadController extends ChangeNotifier {
 
   Future<void> resume(String id) async {
     final record = _find(id);
-    if (record == null || record.status == DownloadStatus.completed) return;
+    if (record == null || record.status == DownloadStatus.completed) {
+      return;
+    }
     // A paused socket may still be unwinding; wait for its writer to close.
-    if (_activeIds.contains(id)) await waitForIdle(id: id);
+    if (_activeIds.contains(id)) {
+      await waitForIdle(id: id);
+    }
     record.status = DownloadStatus.queued;
     record.pausedByScheduler = false;
     // Explicit manual Resume means "start now" even if it was scheduled.
@@ -884,9 +944,13 @@ class DownloadController extends ChangeNotifier {
     final record = _find(id);
     if (record == null || _activeIds.contains(id) ||
         (record.status != DownloadStatus.failed &&
-            record.status != DownloadStatus.paused)) return false;
+            record.status != DownloadStatus.paused)) {
+      return false;
+    }
     final part = _partialFile(record);
-    if (await part.exists()) await part.delete();
+    if (await part.exists()) {
+      await part.delete();
+    }
     await SegmentedDownloader.deleteSegments(record);
     record.segments.clear();
     record.downloadedBytes = 0;
@@ -919,13 +983,17 @@ class DownloadController extends ChangeNotifier {
 
   Future<void> remove(String id) async {
     final record = _find(id);
-    if (record == null) return;
+    if (record == null) {
+      return;
+    }
     if (_activeIds.contains(id)) {
       await pause(id);
       await waitForIdle(id: id);
     }
     final part = _partialFile(record);
-    if (await part.exists()) await part.delete();
+    if (await part.exists()) {
+      await part.delete();
+    }
     await SegmentedDownloader.deleteSegments(record);
     // Completed files remain on disk when history is removed.
     _records.remove(record);
@@ -936,7 +1004,9 @@ class DownloadController extends ChangeNotifier {
 
   DownloadRecord? _find(String id) {
     for (final record in _records) {
-      if (record.id == id) return record;
+      if (record.id == id) {
+        return record;
+      }
     }
     return null;
   }
@@ -946,21 +1016,33 @@ class DownloadController extends ChangeNotifier {
     _scheduleTimer = null;
     DateTime? nextDue;
     final now = _now();
-    if (!scheduleWindow.allows(now)) return;
+    if (!scheduleWindow.allows(now)) {
+      return;
+    }
     for (final record in _records.reversed) {
-      if (record.status != DownloadStatus.queued) continue;
-      if (_activeIds.contains(record.id)) continue;
-      final due = record.retryAt ?? record.scheduledAt;
-      if (due != null && due.isAfter(now)) {
-        if (nextDue == null || due.isBefore(nextDue)) nextDue = due;
+      if (record.status != DownloadStatus.queued) {
         continue;
       }
-      if (_queuePaused || _activeIds.length >= maxSimultaneous) continue;
+      if (_activeIds.contains(record.id)) {
+        continue;
+      }
+      final due = record.retryAt ?? record.scheduledAt;
+      if (due != null && due.isAfter(now)) {
+        if (nextDue == null || due.isBefore(nextDue)) {
+          nextDue = due;
+        }
+        continue;
+      }
+      if (_queuePaused || _activeIds.length >= maxSimultaneous) {
+        continue;
+      }
       final host = Uri.tryParse(record.activeUrl)?.host;
       if (host != null && _activeIds.where((id) {
         final active = _find(id);
         return active != null && Uri.tryParse(active.activeUrl)?.host == host;
-      }).length >= maxActivePerHost) continue;
+      }).length >= maxActivePerHost) {
+        continue;
+      }
       _activeIds.add(record.id);
       unawaited(_run(record));
     }
@@ -1045,7 +1127,9 @@ class DownloadController extends ChangeNotifier {
             record.kind != DownloadKind.directVideo)) {
       return false;
     }
-    if (error is SocketException || error is TimeoutException) return true;
+    if (error is SocketException || error is TimeoutException) {
+      return true;
+    }
     if (error is HttpException) {
       final message = error.message.toLowerCase();
       if (message.contains('connection closed') ||
@@ -1065,7 +1149,9 @@ class DownloadController extends ChangeNotifier {
   }
 
   bool _isConnectivityError(Object error) {
-    if (error is SocketException || error is TimeoutException) return true;
+    if (error is SocketException || error is TimeoutException) {
+      return true;
+    }
     if (error is HttpException) {
       final message = error.message.toLowerCase();
       return message.contains('connection closed') ||
@@ -1075,17 +1161,29 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<bool> _tryNextMirror(DownloadRecord record, Object error) async {
-    if (record.retryPolicy == DownloadRetryPolicy.never) return false;
+    if (record.retryPolicy == DownloadRetryPolicy.never) {
+      return false;
+    }
     if (record.kind != DownloadKind.file &&
-        record.kind != DownloadKind.directVideo) return false;
-    if (record.activeMirrorIndex >= record.alternateUrls.length) return false;
-    if (record.downloadedBytes != 0 || record.segments.isNotEmpty) return false;
+        record.kind != DownloadKind.directVideo) {
+      return false;
+    }
+    if (record.activeMirrorIndex >= record.alternateUrls.length) {
+      return false;
+    }
+    if (record.downloadedBytes != 0 || record.segments.isNotEmpty) {
+      return false;
+    }
     final partial = _partialFile(record);
-    if (await partial.exists() && await partial.length() != 0) return false;
+    if (await partial.exists() && await partial.length() != 0) {
+      return false;
+    }
     final eligible = _isConnectivityError(error) ||
         (error is HttpException && RegExp(r'\b(404|408|429|5\d\d)\b')
             .hasMatch(error.message));
-    if (!eligible) return false;
+    if (!eligible) {
+      return false;
+    }
     record.activeMirrorIndex++;
     // No bytes were written. Reset the original response's identity metadata.
     record.totalBytes = null;
@@ -1097,7 +1195,9 @@ class DownloadController extends ChangeNotifier {
   Future<void> _download(DownloadRecord record) async {
     final part = _partialFile(record);
     await part.parent.create(recursive: true);
-    if (await _finalizeRecoveredBytes(record, part)) return;
+    if (await _finalizeRecoveredBytes(record, part)) {
+      return;
+    }
     if (record.kind == DownloadKind.hls) {
       await _downloadHls(record, part);
       return;
@@ -1109,7 +1209,9 @@ class DownloadController extends ChangeNotifier {
     final existing = await part.exists() ? await part.length() : 0;
     if (record.segments.isNotEmpty || existing == 0) {
       final probe = await SegmentedDownloader.probe(Uri.parse(record.activeUrl));
-      if (record.status != DownloadStatus.downloading) return;
+      if (record.status != DownloadStatus.downloading) {
+        return;
+      }
       if ((record.kind == DownloadKind.file ||
               record.kind == DownloadKind.directVideo) &&
           probe?.mimeType != null) {
@@ -1165,7 +1267,9 @@ class DownloadController extends ChangeNotifier {
             remainingBytes: segmentTotal == null ? null :
                 (segmentTotal - record.downloadedBytes).clamp(0, segmentTotal).toInt(),
             assemblyBytes: segmentTotal ?? 0);
-        if (record.status != DownloadStatus.downloading) return;
+        if (record.status != DownloadStatus.downloading) {
+          return;
+        }
         final client = HttpClient()
           ..autoUncompress = false
           ..connectionTimeout = const Duration(seconds: 25)
@@ -1182,7 +1286,9 @@ class DownloadController extends ChangeNotifier {
           onProgress: () {
             record.lastProgressAt = DateTime.now();
             final now = clock.elapsedMilliseconds;
-            if (now - lastMillis < 500) return;
+            if (now - lastMillis < 500) {
+              return;
+            }
             final elapsed = now - lastMillis;
             record.bytesPerSecond =
                 (record.downloadedBytes - lastBytes) * 1000 / elapsed;
@@ -1192,10 +1298,14 @@ class DownloadController extends ChangeNotifier {
             unawaited(_save().catchError((Object _) {}));
           },
         );
-        if (record.status != DownloadStatus.downloading) return;
+        if (record.status != DownloadStatus.downloading) {
+          return;
+        }
         await _ensureDiskSpace(record, remainingBytes: 0,
             assemblyBytes: record.totalBytes ?? 0);
-        if (record.status != DownloadStatus.downloading) return;
+        if (record.status != DownloadStatus.downloading) {
+          return;
+        }
         await SegmentedDownloader.assemble(record, part);
         final segmentBasePath = record.savePath;
         await _finalizeFile(record, part);
@@ -1228,12 +1338,20 @@ class DownloadController extends ChangeNotifier {
           await part.length() == record.totalBytes;
       await _ensureDiskSpace(record, remainingBytes: 0,
           assemblyBytes: existingAssembly ? 0 : record.totalBytes!);
-      if (record.status != DownloadStatus.downloading) return true;
-      if (!existingAssembly) await SegmentedDownloader.assemble(record, part);
-      if (record.status != DownloadStatus.downloading) return true;
+      if (record.status != DownloadStatus.downloading) {
+        return true;
+      }
+      if (!existingAssembly) {
+        await SegmentedDownloader.assemble(record, part);
+      }
+      if (record.status != DownloadStatus.downloading) {
+        return true;
+      }
       final segmentBasePath = record.savePath;
       await _finalizeFile(record, part);
-      if (record.status != DownloadStatus.downloading) return true;
+      if (record.status != DownloadStatus.downloading) {
+        return true;
+      }
       try {
         await SegmentedDownloader.deleteSegments(
             record, basePath: segmentBasePath);
@@ -1243,7 +1361,9 @@ class DownloadController extends ChangeNotifier {
       record.segments.clear();
       return true;
     }
-    if (!await part.exists()) return false;
+    if (!await part.exists()) {
+      return false;
+    }
     final length = await part.length();
     if (record.kind == DownloadKind.hls) {
       if (record.hlsTotalSegments > 0 &&
@@ -1323,14 +1443,18 @@ class DownloadController extends ChangeNotifier {
       final match = header == null
           ? null
           : RegExp(r'^bytes (\d+)-(\d+)/(\d+|\*)$').firstMatch(header);
-      if (match == null) throw const FormatException('Invalid Content-Range.');
+      if (match == null) {
+        throw const FormatException('Invalid Content-Range.');
+      }
       final start = int.parse(match.group(1)!);
       final end = int.parse(match.group(2)!);
       if (start != existing || end < start || match.group(3) == '*') {
         throw const FormatException('Unexpected server byte range.');
       }
       total = int.parse(match.group(3)!);
-      if (end >= total) throw const FormatException('Invalid range total.');
+      if (end >= total) {
+        throw const FormatException('Invalid range total.');
+      }
       final freshEtag = response.headers.value(HttpHeaders.etagHeader);
       final freshValidator = record.etag != null && !record.etag!.startsWith('W/')
           ? freshEtag : response.headers.value(HttpHeaders.lastModifiedHeader);
@@ -1356,7 +1480,9 @@ class DownloadController extends ChangeNotifier {
     record.downloadedBytes = existing;
     await _ensureDiskSpace(record, remainingBytes: total == null
         ? null : (total - existing).clamp(0, total).toInt());
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     notifyListeners();
 
     final writer = await part.open(mode: mode);
@@ -1365,12 +1491,16 @@ class DownloadController extends ChangeNotifier {
     var nextSpaceCheckAt = existing + 32 * 1024 * 1024;
     try {
       await for (final bytes in response) {
-        if (record.status != DownloadStatus.downloading) break;
+        if (record.status != DownloadStatus.downloading) {
+          break;
+        }
         await _rateLimiter.acquire(
           bytes.length,
           isActive: () => record.status == DownloadStatus.downloading,
         );
-        if (record.status != DownloadStatus.downloading) break;
+        if (record.status != DownloadStatus.downloading) {
+          break;
+        }
         await writer.writeFrom(bytes);
         record.downloadedBytes += bytes.length;
         if (record.downloadedBytes >= nextSpaceCheckAt) {
@@ -1394,7 +1524,9 @@ class DownloadController extends ChangeNotifier {
     } finally {
       await writer.close();
     }
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     final size = await part.length();
     if (total != null && size != total) {
       throw StateError('Incomplete download: $size of $total bytes.');
@@ -1404,7 +1536,9 @@ class DownloadController extends ChangeNotifier {
   }
 
   void _setKind(DownloadRecord record, DownloadKind kind) {
-    if (kind == record.kind) return;
+    if (kind == record.kind) {
+      return;
+    }
     record.kind = kind;
     if (kind == DownloadKind.hls) {
       record.fileName = safeName(
@@ -1417,7 +1551,9 @@ class DownloadController extends ChangeNotifier {
 
   Future<void> _downloadHls(DownloadRecord record, File partialFile) async {
     await _ensureDiskSpace(record, remainingBytes: null);
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     final client = HttpClient()
       ..autoUncompress = false
       ..connectionTimeout = const Duration(seconds: 25);
@@ -1465,7 +1601,9 @@ class DownloadController extends ChangeNotifier {
       }
       rethrow;
     }
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     if (record.hlsCompletedSegments != record.hlsTotalSegments ||
         record.hlsTotalSegments == 0) {
       throw StateError('The HLS video is missing segments.');
@@ -1487,10 +1625,16 @@ class DownloadController extends ChangeNotifier {
       );
     }
     await _ensureDiskSpace(record, remainingBytes: null);
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     final source = Uri.parse(record.url);
-    if (checkDash) await FfmpegMuxer.checkUnprotectedDash(source);
-    if (record.status != DownloadStatus.downloading) return;
+    if (checkDash) {
+      await FfmpegMuxer.checkUnprotectedDash(source);
+    }
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
 
     final dot = record.fileName.lastIndexOf('.');
     final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
@@ -1517,7 +1661,9 @@ class DownloadController extends ChangeNotifier {
       onStart: (process) => _processes[record.id] = process,
       isActive: () => record.status == DownloadStatus.downloading,
     );
-    if (record.status != DownloadStatus.downloading) return;
+    if (record.status != DownloadStatus.downloading) {
+      return;
+    }
     await _finalizeFile(record, part);
   }
 
@@ -1540,7 +1686,9 @@ class DownloadController extends ChangeNotifier {
           digest != record.expectedSha256!.toLowerCase()) {
         throw IntegrityMismatchException(record.expectedSha256!, digest);
       }
-      if (record.status != DownloadStatus.downloading) return;
+      if (record.status != DownloadStatus.downloading) {
+        return;
+      }
       var destination = File(record.savePath);
       if (await destination.exists()) {
         final dot = record.fileName.lastIndexOf('.');

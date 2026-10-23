@@ -107,7 +107,9 @@ class BrowserBridgeServer {
     try {
       if (await _metadataFile.exists()) {
         final data = jsonDecode(await _metadataFile.readAsString());
-        if (data is Map && data['token'] == _token) await _metadataFile.delete();
+        if (data is Map && data['token'] == _token) {
+          await _metadataFile.delete();
+        }
       }
     } catch (_) {
       // Stale metadata is harmless; the native host reports app_not_running.

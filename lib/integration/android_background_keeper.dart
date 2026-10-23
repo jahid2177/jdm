@@ -29,17 +29,23 @@ class AndroidBackgroundKeeper extends ChangeNotifier {
       FlutterBackground.isBackgroundExecutionEnabled;
 
   void _onControllerChanged() {
-    if (Platform.isAndroid) unawaited(_reconcile());
+    if (Platform.isAndroid) {
+      unawaited(_reconcile());
+    }
   }
 
   Future<bool> changeEnabled(bool enabled) async {
-    if (!Platform.isAndroid) return false;
+    if (!Platform.isAndroid) {
+      return false;
+    }
     error = null;
     _working = true;
     notifyListeners();
     try {
       // Request battery/foreground permissions only after the user opts in.
-      if (enabled) await _initializeService();
+      if (enabled) {
+        await _initializeService();
+      }
       await controller.setAndroidBackgroundEnabled(enabled);
       await _reconcile();
       return error == null;
@@ -55,7 +61,9 @@ class AndroidBackgroundKeeper extends ChangeNotifier {
   }
 
   Future<void> _initializeService() async {
-    if (_initialized) return;
+    if (_initialized) {
+      return;
+    }
     final granted = await FlutterBackground.initialize(
       androidConfig: const FlutterBackgroundAndroidConfig(
         notificationTitle: 'Jahid Download Manager',
@@ -71,9 +79,13 @@ class AndroidBackgroundKeeper extends ChangeNotifier {
   }
 
   Future<void> _reconcile() {
-    if (!Platform.isAndroid) return Future.value();
+    if (!Platform.isAndroid) {
+      return Future.value();
+    }
     final existing = _inFlight;
-    if (existing != null) return existing;
+    if (existing != null) {
+      return existing;
+    }
     final operation = _applyDesiredState();
     _inFlight = operation;
     return operation.whenComplete(() {
@@ -94,12 +106,16 @@ class AndroidBackgroundKeeper extends ChangeNotifier {
       optedIn: controller.androidBackgroundEnabled,
       activeTransfers: controller.activeCount,
     );
-    if (shouldRun == isRunning) return;
+    if (shouldRun == isRunning) {
+      return;
+    }
     try {
       if (shouldRun) {
         await _initializeService();
         final started = await FlutterBackground.enableBackgroundExecution();
-        if (!started) throw StateError('Android refused the foreground service');
+        if (!started) {
+          throw StateError('Android refused the foreground service');
+        }
       } else if (_initialized) {
         final stopped = await FlutterBackground.disableBackgroundExecution();
         if (!stopped && isRunning) {

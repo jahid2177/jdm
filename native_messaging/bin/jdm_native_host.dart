@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import '../lib/native_protocol.dart';
+import 'package:jahid_download_manager/native_protocol.dart';
 
 /// Windows Native Messaging executable; stdout MUST contain framed JSON only.
 Future<void> main(List<String> arguments) async {
@@ -11,7 +11,9 @@ Future<void> main(List<String> arguments) async {
     final header = <int>[];
     for (var i = 0; i < 4; i++) {
       final byte = stdin.readByteSync();
-      if (byte < 0) return;
+      if (byte < 0) {
+        return;
+      }
       header.add(byte);
     }
     final length = ByteData.sublistView(Uint8List.fromList(header))
@@ -23,7 +25,9 @@ Future<void> main(List<String> arguments) async {
     final message = List<int>.from(header);
     for (var i = 0; i < length; i++) {
       final byte = stdin.readByteSync();
-      if (byte < 0) throw NativeProtocolException('truncated_message');
+      if (byte < 0) {
+        throw NativeProtocolException('truncated_message');
+      }
       message.add(byte);
     }
     final payload = validateDownloadMessage(decodeNativeFrame(message));

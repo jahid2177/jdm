@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import '../lib/download/download_controller.dart';
-import '../lib/integration/browser_bridge_server.dart';
-import '../native_messaging/lib/native_protocol.dart';
+import 'package:jahid_download_manager/download/download_controller.dart';
+import 'package:jahid_download_manager/integration/browser_bridge_server.dart';
+import 'package:jahid_download_manager/native_protocol.dart';
 
 void main() {
   group('Native Messaging validation', () {

@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:cross_file/cross_file.dart';
 import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
@@ -52,12 +51,16 @@ class CompletedFileActions {
   // File.copy streams to disk; it does not load an entire movie into RAM.
   static Future<File> _fileAvailableToOs(DownloadRecord record) async {
     final file = await requireCompletedFile(record);
-    if (!Platform.isAndroid) return file;
+    if (!Platform.isAndroid) {
+      return file;
+    }
 
     final appSupport = await getApplicationSupportDirectory();
     final source = await file.resolveSymbolicLinks();
     final allowed = await appSupport.resolveSymbolicLinks();
-    if (source.startsWith('$allowed${Platform.pathSeparator}')) return file;
+    if (source.startsWith('$allowed${Platform.pathSeparator}')) {
+      return file;
+    }
 
     final cache = await getTemporaryDirectory();
     final staging = await Directory(

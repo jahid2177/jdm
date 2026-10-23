@@ -50,7 +50,9 @@ class HlsVodDownloader {
         }
         final variants = <(int, Uri)>[];
         for (var index = 0; index < lines.length - 1; index++) {
-          if (!lines[index].startsWith('#EXT-X-STREAM-INF:')) continue;
+          if (!lines[index].startsWith('#EXT-X-STREAM-INF:')) {
+            continue;
+          }
           final bandwidth = RegExp(r'(?:^|,)BANDWIDTH=(\d+)')
               .firstMatch(lines[index].substring('#EXT-X-STREAM-INF:'.length));
           final next = lines[index + 1];
@@ -60,7 +62,9 @@ class HlsVodDownloader {
           variants.add((int.tryParse(bandwidth?.group(1) ?? '') ?? 0,
               _validatedUri(document.uri.resolve(next))));
         }
-        if (variants.isEmpty) throw const FormatException('No HLS video variant.');
+        if (variants.isEmpty) {
+          throw const FormatException('No HLS video variant.');
+        }
         variants.sort((a, b) => b.$1.compareTo(a.$1));
         final index = switch (quality) {
           VideoQuality.highest => 0,
@@ -171,12 +175,16 @@ class HlsVodDownloader {
       Uri.parse(record.url),
       quality: record.videoQuality,
     );
-    if (!isDownloading()) return;
+    if (!isDownloading()) {
+      return;
+    }
 
     final changed = record.hlsFingerprint != playlist.fingerprint ||
         record.hlsCompletedSegments > playlist.segments.length;
     if (changed || !await partialFile.exists()) {
-      if (await partialFile.exists()) await partialFile.delete();
+      if (await partialFile.exists()) {
+        await partialFile.delete();
+      }
       record.hlsCompletedSegments = 0;
       record.hlsCommittedBytes = 0;
     } else {
@@ -206,7 +214,9 @@ class HlsVodDownloader {
     try {
       for (var index = record.hlsCompletedSegments;
           index < playlist.segments.length; index++) {
-        if (!isDownloading()) return;
+        if (!isDownloading()) {
+          return;
+        }
         final uri = playlist.segments[index];
         final request = await client.getUrl(uri);
         request.followRedirects = true;
@@ -222,11 +232,15 @@ class HlsVodDownloader {
         }
         var segmentBytes = 0;
         await for (final bytes in response) {
-          if (!isDownloading()) return;
+          if (!isDownloading()) {
+            return;
+          }
           if (rateLimiter != null) {
             await rateLimiter.acquire(bytes.length, isActive: isDownloading);
           }
-          if (!isDownloading()) return;
+          if (!isDownloading()) {
+            return;
+          }
           if (segmentBytes == 0 && bytes.isNotEmpty && bytes.first != 0x47) {
             throw const UnsupportedHlsException('segment is not MPEG transport stream');
           }
@@ -235,7 +249,9 @@ class HlsVodDownloader {
           record.downloadedBytes += bytes.length;
           onProgress();
         }
-        if (!isDownloading()) return;
+        if (!isDownloading()) {
+          return;
+        }
         if (segmentBytes == 0 || segmentBytes % 188 != 0) {
           throw const UnsupportedHlsException('invalid MPEG-TS packet alignment');
         }

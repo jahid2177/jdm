@@ -47,7 +47,9 @@ Uint8List encodeNativeResponse(Map<String, Object?> payload) {
 }
 
 Map<String, dynamic> decodeNativeFrame(List<int> bytes) {
-  if (bytes.length < 4) throw NativeProtocolException('short_header');
+  if (bytes.length < 4) {
+    throw NativeProtocolException('short_header');
+  }
   final header = ByteData.sublistView(Uint8List.fromList(bytes), 0, 4);
   final length = header.getUint32(0, Endian.host);
   if (length > maximumNativeMessageBytes || bytes.length != length + 4) {

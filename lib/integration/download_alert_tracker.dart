@@ -27,7 +27,9 @@ class DownloadAlertTracker {
     for (final record in records) {
       final previous = _lastStatus[record.id];
       next[record.id] = record.status;
-      if (previous == null || previous == record.status) continue;
+      if (previous == null || previous == record.status) {
+        continue;
+      }
       if (record.status == DownloadStatus.completed) {
         alerts.add(DownloadAlert(DownloadAlertType.completed, record));
       } else if (record.status == DownloadStatus.failed) {
