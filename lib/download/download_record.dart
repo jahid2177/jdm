@@ -95,6 +95,7 @@ class DownloadRecord {
     this.expectedSha256,
     this.actualSha256,
     this.recoveryNeeded = false,
+    this.pausedByScheduler = false,
     this.category = DownloadCategory.general,
     List<String>? alternateUrls,
     this.activeMirrorIndex = 0,
@@ -131,6 +132,8 @@ class DownloadRecord {
   String? actualSha256;
   /// True only for tasks interrupted by an unexpected app shutdown.
   bool recoveryNeeded;
+  /// Paused by an enabled recurring time window, not by the user.
+  bool pausedByScheduler;
   /// Disk availability and warning are observations, not saved allocations.
   int? freeDiskBytes;
   int? estimatedDiskBytesNeeded;
@@ -204,6 +207,7 @@ class DownloadRecord {
         'expectedSha256': expectedSha256,
         'actualSha256': actualSha256,
         'recoveryNeeded': recoveryNeeded,
+        'pausedByScheduler': pausedByScheduler,
         'category': category.name,
         'alternateUrls': alternateUrls,
         'activeMirrorIndex': activeMirrorIndex,
@@ -258,6 +262,7 @@ class DownloadRecord {
         expectedSha256: json['expectedSha256'] as String?,
         actualSha256: json['actualSha256'] as String?,
         recoveryNeeded: json['recoveryNeeded'] == true,
+        pausedByScheduler: json['pausedByScheduler'] == true,
         category: DownloadCategory.values.firstWhere(
           (value) => value.name == json['category'],
           orElse: () => DownloadCategory.general,

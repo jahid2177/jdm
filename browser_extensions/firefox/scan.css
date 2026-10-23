@@ -1,0 +1,4 @@
+.secondary {background: #223b64; border: 1px solid #375888;}
+#results {margin-top: 10px; max-height: 260px; overflow: auto;}
+.candidate {border: 1px solid #364c69; border-radius: 8px; padding: 8px; margin: 7px 0; font-size: 12px; overflow-wrap: anywhere;}
+.candidate button {margin-top: 6px; padding: 8px;}

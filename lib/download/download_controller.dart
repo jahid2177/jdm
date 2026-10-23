@@ -10,6 +10,7 @@ import 'download_record.dart';
 import 'download_history_backup.dart';
 import 'download_rate_limiter.dart';
 import 'download_storage_guard.dart';
+import 'download_schedule_window.dart';
 import 'segmented_downloader.dart';
 import '../video/hls_vod_downloader.dart';
 import '../video/ffmpeg_muxer.dart';
@@ -55,9 +56,12 @@ class DownloadController extends ChangeNotifier {
     this.retryBaseDelay = const Duration(seconds: 2),
     this.reconnectBaseDelay = const Duration(seconds: 5),
     this.speedSampleInterval = const Duration(seconds: 1),
+    this.scheduleCheckInterval = const Duration(seconds: 15),
+    DateTime Function()? nowProvider,
     FreeDiskBytesReader? freeDiskBytesReader,
     int diskReserveBytes = 64 * 1024 * 1024,
-  }) : _storageGuard = DownloadStorageGuard(
+  }) : _now = nowProvider ?? DateTime.now,
+       _storageGuard = DownloadStorageGuard(
           reader: freeDiskBytesReader, reserveBytes: diskReserveBytes);
 
   factory DownloadController.forTesting(
@@ -69,6 +73,8 @@ class DownloadController extends ChangeNotifier {
     Duration retryBaseDelay = const Duration(seconds: 2),
     Duration reconnectBaseDelay = const Duration(seconds: 5),
     Duration speedSampleInterval = const Duration(seconds: 1),
+    Duration scheduleCheckInterval = const Duration(seconds: 15),
+    DateTime Function()? nowProvider,
     FreeDiskBytesReader? freeDiskBytesReader,
     int diskReserveBytes = 64 * 1024 * 1024,
   ) => DownloadController._(
@@ -80,6 +86,8 @@ class DownloadController extends ChangeNotifier {
         retryBaseDelay: retryBaseDelay,
         reconnectBaseDelay: reconnectBaseDelay,
         speedSampleInterval: speedSampleInterval,
+        scheduleCheckInterval: scheduleCheckInterval,
+        nowProvider: nowProvider,
         freeDiskBytesReader: freeDiskBytesReader,
         diskReserveBytes: diskReserveBytes,
       );
@@ -112,6 +120,8 @@ class DownloadController extends ChangeNotifier {
   final Duration retryBaseDelay;
   final Duration reconnectBaseDelay;
   final Duration speedSampleInterval;
+  final Duration scheduleCheckInterval;
+  final DateTime Function() _now;
   final DownloadStorageGuard _storageGuard;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
@@ -120,6 +130,8 @@ class DownloadController extends ChangeNotifier {
   final DownloadRateLimiter _rateLimiter = DownloadRateLimiter();
   Timer? _scheduleTimer;
   Timer? _speedTimer;
+  Timer? _windowTimer;
+  bool _evaluatingWindow = false;
   final List<DownloadSpeedSample> _speedHistory = [];
   final Map<String, int> _lastSampledBytes = {};
   Future<void> _pendingSave = Future.value();
@@ -128,6 +140,10 @@ class DownloadController extends ChangeNotifier {
   int _sequence = 0;
   int maxSimultaneous = 3;
   int maxAutomaticRetries = 2;
+  int maxActivePerHost = 2;
+  DownloadScheduleWindow scheduleWindow = const DownloadScheduleWindow();
+  bool _clipboardMonitoringEnabled = false;
+  String _themePreference = 'system';
   bool _queuePaused = false;
   bool _androidBackgroundEnabled = false;
   bool _androidAutoExportEnabled = false;
@@ -137,6 +153,9 @@ class DownloadController extends ChangeNotifier {
   List<DownloadRecord> get downloads => List.unmodifiable(_records);
   int get activeCount => _activeIds.length;
   bool get queuePaused => _queuePaused;
+  bool get clipboardMonitoringEnabled => _clipboardMonitoringEnabled;
+  String get themePreference => _themePreference;
+  bool get withinDownloadWindow => scheduleWindow.allows(_now());
   bool get androidBackgroundEnabled => _androidBackgroundEnabled;
   bool get androidAutoExportEnabled => _androidAutoExportEnabled;
   bool get androidCompletionNotificationsEnabled =>
@@ -293,8 +312,10 @@ class DownloadController extends ChangeNotifier {
     }
     notifyListeners();
     _speedTimer ??= Timer.periodic(speedSampleInterval, (_) => _sampleSpeed());
+    _windowTimer ??= Timer.periodic(scheduleCheckInterval,
+        (_) => unawaited(evaluateDownloadWindow()));
     if (recoveredState) await _save();
-    _pump();
+    await evaluateDownloadWindow();
   }
 
   void _sampleSpeed() {
@@ -401,6 +422,9 @@ class DownloadController extends ChangeNotifier {
       fileName: name,
       savePath: '${categoryDirectoryPath(chosenCategory)}${Platform.pathSeparator}$name',
       createdAt: DateTime.now(),
+      status: scheduleWindow.allows(_now())
+          ? DownloadStatus.queued : DownloadStatus.paused,
+      pausedByScheduler: !scheduleWindow.allows(_now()),
       kind: kind,
       category: chosenCategory,
       alternateUrls: mirrors,
@@ -490,6 +514,76 @@ class DownloadController extends ChangeNotifier {
     _pump();
   }
 
+  /// Prevents one busy server from occupying every queue slot. Existing
+  /// transfers finish; the new limit applies to the next scheduled starts.
+  Future<void> setMaximumActivePerHost(int value) async {
+    if (value < 1 || value > 5) throw RangeError.range(value, 1, 5);
+    maxActivePerHost = value;
+    notifyListeners();
+    await _saveSettings();
+    _pump();
+  }
+
+  Future<void> setClipboardMonitoringEnabled(bool enabled) async {
+    _clipboardMonitoringEnabled = enabled;
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setThemePreference(String preference) async {
+    if (!{'system', 'light', 'dark'}.contains(preference)) {
+      throw ArgumentError.value(preference, 'preference');
+    }
+    _themePreference = preference;
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setDownloadWindow(DownloadScheduleWindow window) async {
+    if (window.startMinute < 0 || window.startMinute > 1439 ||
+        window.endMinute < 0 || window.endMinute > 1439 ||
+        window.enabled && (window.startMinute == window.endMinute ||
+            window.weekdays < 1 || window.weekdays > 127)) {
+      throw ArgumentError('Select valid, distinct times and at least one day.');
+    }
+    scheduleWindow = window;
+    await _saveSettings();
+    await evaluateDownloadWindow();
+  }
+
+  /// Evaluated while JDM runs. Only scheduler-paused tasks auto-resume;
+  /// manual pauses and interrupted shutdown recovery always require consent.
+  Future<void> evaluateDownloadWindow() async {
+    if (_evaluatingWindow) return;
+    _evaluatingWindow = true;
+    try {
+      final permitted = scheduleWindow.allows(_now());
+      var changed = false;
+      for (final record in _records) {
+        if (!permitted && (record.status == DownloadStatus.downloading ||
+            record.status == DownloadStatus.queued)) {
+          record.status = DownloadStatus.paused;
+          record.pausedByScheduler = true;
+          _clients[record.id]?.close(force: true);
+          _processes[record.id]?.kill();
+          changed = true;
+        } else if (permitted && record.status == DownloadStatus.paused &&
+            record.pausedByScheduler && !_activeIds.contains(record.id)) {
+          record.status = DownloadStatus.queued;
+          record.pausedByScheduler = false;
+          changed = true;
+        }
+      }
+      if (changed) {
+        notifyListeners();
+        await _save();
+      }
+      _pump();
+    } finally {
+      _evaluatingWindow = false;
+    }
+  }
+
   Future<void> setMaxAutomaticRetries(int retries) async {
     if (retries < 0 || retries > 5) {
       throw RangeError.range(retries, 0, 5, 'retries');
@@ -554,9 +648,14 @@ class DownloadController extends ChangeNotifier {
   Future<void> pauseAll() async {
     _queuePaused = true;
     for (final record in _records) {
+      if (record.status == DownloadStatus.paused && record.pausedByScheduler) {
+        record.pausedByScheduler = false;
+        continue;
+      }
       if (record.status != DownloadStatus.downloading &&
           record.status != DownloadStatus.queued) continue;
       record.status = DownloadStatus.paused;
+      record.pausedByScheduler = false;
       record.waitingForNetwork = false;
       record.retryAt = null;
       _clients[record.id]?.close(force: true);
@@ -578,6 +677,7 @@ class DownloadController extends ChangeNotifier {
     for (final record in _records) {
       if (record.status == DownloadStatus.paused) {
         record.status = DownloadStatus.queued;
+        record.pausedByScheduler = false;
         record.error = null;
         record.retryAt = null;
         record.retryAttempts = 0;
@@ -676,6 +776,13 @@ class DownloadController extends ChangeNotifier {
           ((settings['maxAutomaticRetries'] as num?)?.toInt() ?? 2)
               .clamp(0, 5).toInt();
       _queuePaused = settings['queuePaused'] == true;
+      maxActivePerHost = ((settings['maxActivePerHost'] as num?)?.toInt() ?? 2)
+          .clamp(1, 5).toInt();
+      scheduleWindow = DownloadScheduleWindow.fromJson(settings['scheduleWindow']);
+      _clipboardMonitoringEnabled = settings['clipboardMonitoringEnabled'] == true;
+      final theme = settings['themePreference'];
+      _themePreference = {'system', 'light', 'dark'}.contains(theme)
+          ? theme as String : 'system';
       _androidBackgroundEnabled = settings['androidBackgroundEnabled'] == true;
       _androidAutoExportEnabled = settings['androidAutoExportEnabled'] == true;
       _androidCompletionNotificationsEnabled =
@@ -691,6 +798,10 @@ class DownloadController extends ChangeNotifier {
     final json = jsonEncode({
       'speedLimitKibPerSecond': speedLimitKibPerSecond,
       'maxSimultaneous': maxSimultaneous,
+      'maxActivePerHost': maxActivePerHost,
+      'scheduleWindow': scheduleWindow.toJson(),
+      'clipboardMonitoringEnabled': _clipboardMonitoringEnabled,
+      'themePreference': _themePreference,
       'maxAutomaticRetries': maxAutomaticRetries,
       'queuePaused': _queuePaused,
       'androidBackgroundEnabled': _androidBackgroundEnabled,
@@ -714,9 +825,17 @@ class DownloadController extends ChangeNotifier {
 
   Future<void> pause(String id) async {
     final record = _find(id);
+    if (record != null && record.status == DownloadStatus.paused &&
+        record.pausedByScheduler) {
+      record.pausedByScheduler = false;
+      notifyListeners();
+      await _save();
+      return;
+    }
     if (record == null || (record.status != DownloadStatus.downloading &&
         record.status != DownloadStatus.queued)) return;
     record.status = DownloadStatus.paused;
+    record.pausedByScheduler = false;
     record.waitingForNetwork = false;
     record.retryAt = null;
     _clients[id]?.close(force: true);
@@ -732,6 +851,7 @@ class DownloadController extends ChangeNotifier {
     // A paused socket may still be unwinding; wait for its writer to close.
     if (_activeIds.contains(id)) await waitForIdle(id: id);
     record.status = DownloadStatus.queued;
+    record.pausedByScheduler = false;
     // Explicit manual Resume means "start now" even if it was scheduled.
     record.scheduledAt = null;
     record.error = null;
@@ -740,6 +860,7 @@ class DownloadController extends ChangeNotifier {
     record.waitingForNetwork = false;
     record.reconnectChecks = 0;
     record.recoveryNeeded = false;
+    record.pausedByScheduler = false;
     notifyListeners();
     await _save();
     _pump();
@@ -824,15 +945,22 @@ class DownloadController extends ChangeNotifier {
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
     DateTime? nextDue;
-    final now = DateTime.now();
+    final now = _now();
+    if (!scheduleWindow.allows(now)) return;
     for (final record in _records.reversed) {
       if (record.status != DownloadStatus.queued) continue;
+      if (_activeIds.contains(record.id)) continue;
       final due = record.retryAt ?? record.scheduledAt;
       if (due != null && due.isAfter(now)) {
         if (nextDue == null || due.isBefore(nextDue)) nextDue = due;
         continue;
       }
       if (_queuePaused || _activeIds.length >= maxSimultaneous) continue;
+      final host = Uri.tryParse(record.activeUrl)?.host;
+      if (host != null && _activeIds.where((id) {
+        final active = _find(id);
+        return active != null && Uri.tryParse(active.activeUrl)?.host == host;
+      }).length >= maxActivePerHost) continue;
       _activeIds.add(record.id);
       unawaited(_run(record));
     }
@@ -1461,6 +1589,7 @@ class DownloadController extends ChangeNotifier {
   @override
   void dispose() {
     _speedTimer?.cancel();
+    _windowTimer?.cancel();
     _scheduleTimer?.cancel();
     for (final client in _clients.values) {
       client.close(force: true);

@@ -10,10 +10,12 @@ import 'package:flutter/services.dart';
 import 'download/download_controller.dart';
 import 'download/download_history_backup.dart';
 import 'download/download_record.dart';
+import 'download/download_schedule_window.dart';
 import 'integration/android_background_keeper.dart';
 import 'integration/android_completion_coordinator.dart';
 import 'integration/browser_bridge_server.dart';
 import 'integration/completed_file_actions.dart';
+import 'integration/clipboard_link_detector.dart';
 import 'integration/download_alert_tracker.dart';
 import 'integration/windows_tray_controller.dart';
 
@@ -65,7 +67,21 @@ class JdmApp extends StatefulWidget {
 }
 
 class _JdmAppState extends State<JdmApp> {
-  ThemeMode mode = ThemeMode.system;
+  ThemeMode get mode => switch (widget.controller.themePreference) {
+    'dark' => ThemeMode.dark,
+    'light' => ThemeMode.light,
+    _ => ThemeMode.system,
+  };
+
+  Future<void> _cycleTheme() async {
+    final next = switch (widget.controller.themePreference) {
+      'system' => 'light',
+      'light' => 'dark',
+      _ => 'system',
+    };
+    await widget.controller.setThemePreference(next);
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
@@ -100,9 +116,7 @@ class _JdmAppState extends State<JdmApp> {
           controller: widget.controller,
           background: widget.background,
           completion: widget.completion,
-          onToggleTheme: () => setState(() {
-            mode = mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
-          }),
+          onToggleTheme: () => unawaited(_cycleTheme()),
         ),
       );
 }
@@ -149,18 +163,95 @@ class DownloadHome extends StatefulWidget {
   State<DownloadHome> createState() => _DownloadHomeState();
 }
 
-class _DownloadHomeState extends State<DownloadHome> {
+class _DownloadHomeState extends State<DownloadHome>
+    with WidgetsBindingObserver {
   DownloadFilter filter = DownloadFilter.all;
   DownloadCategory? categoryFilter;
   String search = '';
   final Set<String> _busyFileActions = {};
   late final DownloadAlertTracker _alertTracker;
+  Timer? _clipboardTimer;
+  bool _appVisible = true;
+  bool _clipboardDialogOpen = false;
+  String? _lastClipboardText;
+  String? _pendingClipboardUrl;
 
   @override
   void initState() {
     super.initState();
     _alertTracker = DownloadAlertTracker(widget.controller.downloads);
     widget.controller.addListener(_onAlerts);
+    WidgetsBinding.instance.addObserver(this);
+    if (Platform.isWindows) {
+      _clipboardTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (widget.controller.clipboardMonitoringEnabled) {
+          unawaited(_inspectClipboard());
+        }
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appVisible = state == AppLifecycleState.resumed;
+    if (_appVisible && _pendingClipboardUrl != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_showClipboardSuggestion());
+      });
+    }
+  }
+
+  Future<void> _inspectClipboard({bool manual = false}) async {
+    try {
+      final text = (await Clipboard.getData('text/plain'))?.text;
+      if (!mounted || text == null) return;
+      if (!manual && text == _lastClipboardText) return;
+      _lastClipboardText = text;
+      final candidate = ClipboardLinkDetector.firstValidLink(text);
+      if (candidate == null) {
+        if (manual) _message('No public HTTP(S) URL found on clipboard.');
+        return;
+      }
+      _pendingClipboardUrl = candidate;
+      if (manual || _appVisible) await _showClipboardSuggestion();
+    } catch (error) {
+      if (manual && mounted) _message('Clipboard is unavailable: $error');
+    }
+  }
+
+  Future<void> _showClipboardSuggestion() async {
+    if (!mounted || _clipboardDialogOpen || !_appVisible ||
+        _pendingClipboardUrl == null) return;
+    final candidate = _pendingClipboardUrl!;
+    _pendingClipboardUrl = null;
+    _clipboardDialogOpen = true;
+    try {
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Download link found'),
+          content: SelectableText('Add this clipboard URL to your JDM queue?\n\n$candidate'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: const Text('Ignore')),
+            FilledButton(onPressed: () => Navigator.pop(context, true),
+                child: const Text('Add to queue')),
+          ],
+        ),
+      );
+      if (accepted == true) {
+        try {
+          await widget.controller.addUrl(candidate);
+          if (mounted) _message('Clipboard link added to queue.');
+        } on DuplicateDownloadException {
+          if (mounted) _message('This link is already in your download list.');
+        } catch (error) {
+          if (mounted) _message('Cannot add clipboard URL: $error');
+        }
+      }
+    } finally {
+      _clipboardDialogOpen = false;
+    }
   }
 
   void _onAlerts() {
@@ -177,6 +268,8 @@ class _DownloadHomeState extends State<DownloadHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _clipboardTimer?.cancel();
     widget.controller.removeListener(_onAlerts);
     super.dispose();
   }
@@ -721,6 +814,12 @@ class _DownloadHomeState extends State<DownloadHome> {
             ],
           ),
           actions: [
+            if (Platform.isWindows)
+              IconButton(
+                tooltip: 'Review clipboard link (does not auto-download)',
+                icon: const Icon(Icons.content_paste_search_outlined),
+                onPressed: () => _inspectClipboard(manual: true),
+              ),
             IconButton(
               tooltip: 'Download Health Dashboard and Recovery',
               icon: const Icon(Icons.monitor_heart_outlined),
@@ -764,7 +863,7 @@ class _DownloadHomeState extends State<DownloadHome> {
               onPressed: _settings,
             ),
             IconButton(
-              tooltip: 'Change theme',
+              tooltip: 'Cycle system, light and dark theme (saved)',
               icon: const Icon(Icons.brightness_6_outlined),
               onPressed: widget.onToggleTheme,
             ),
@@ -878,7 +977,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 1.4.0 • Md Jahidul Islam',
+              child: Text('JDM 2.0.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -1158,7 +1257,8 @@ class _DownloadHomeState extends State<DownloadHome> {
       ),
       DownloadStatus.downloading => (
         record.isVerifying ? 'Verifying SHA-256' : 'Downloading', Colors.blue),
-      DownloadStatus.paused => ('Paused', Colors.grey),
+      DownloadStatus.paused => (record.pausedByScheduler
+          ? 'Paused by schedule' : 'Paused', Colors.grey),
       DownloadStatus.completed => ('Completed', Colors.green),
       DownloadStatus.failed => ('Failed', Colors.red),
     };
@@ -1191,6 +1291,9 @@ class _DownloadHomeState extends State<DownloadHome> {
           ],
           if (record.status == DownloadStatus.downloading)
             const PopupMenuItem(value: 'pause', child: Text('Pause')),
+          if (record.status == DownloadStatus.paused && record.pausedByScheduler)
+            const PopupMenuItem(value: 'pause',
+                child: Text('Keep paused (cancel auto-resume)')),
           if (record.status == DownloadStatus.paused ||
               record.status == DownloadStatus.failed ||
               record.status == DownloadStatus.queued)
@@ -1226,6 +1329,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             '${widget.controller.activeCount} active • '
             '${widget.controller.interruptedCount} recoverable • '
             '${widget.controller.queuePaused ? 'Queue held' : 'Queue running'} • '
+            '${widget.controller.scheduleWindow.enabled ? widget.controller.withinDownloadWindow ? 'Window open' : 'Window closed' : 'Always on'} • '
             'Speed limit: ${widget.controller.speedLimitKibPerSecond == 0 ? 'Unlimited' : '${widget.controller.speedLimitKibPerSecond} KiB/s'} • '
             'Save folder: ${widget.controller.downloadDirectory.path}',
             maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -1251,8 +1355,14 @@ class _QueueSettingsDialog extends StatefulWidget {
 class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
   late int _limit;
   late int _concurrent;
+  late int _perHost;
   late int _retries;
   late bool _reconnectEnabled;
+  late bool _clipboardEnabled;
+  late bool _windowEnabled;
+  late int _days;
+  late TimeOfDay _start;
+  late TimeOfDay _end;
   bool _changingBackground = false;
   bool _changingCompletionPreference = false;
   String? _backgroundFeedback;
@@ -1263,8 +1373,47 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     super.initState();
     _limit = widget.controller.speedLimitKibPerSecond;
     _concurrent = widget.controller.maxSimultaneous;
+    _perHost = widget.controller.maxActivePerHost;
     _retries = widget.controller.maxAutomaticRetries;
     _reconnectEnabled = widget.controller.autoResumeOnReconnectEnabled;
+    _clipboardEnabled = widget.controller.clipboardMonitoringEnabled;
+    final window = widget.controller.scheduleWindow;
+    _windowEnabled = window.enabled;
+    _days = window.weekdays;
+    _start = TimeOfDay(hour: window.startMinute ~/ 60,
+        minute: window.startMinute % 60);
+    _end = TimeOfDay(hour: window.endMinute ~/ 60,
+        minute: window.endMinute % 60);
+  }
+
+  Future<void> _pickWindowTime({required bool start}) async {
+    final result = await showTimePicker(
+        context: context, initialTime: start ? _start : _end);
+    if (result != null && mounted) {
+      setState(() {
+        if (start) {
+          _start = result;
+        } else {
+          _end = result;
+        }
+      });
+    }
+  }
+
+  Future<void> _applyWindow() async {
+    try {
+      await widget.controller.setDownloadWindow(DownloadScheduleWindow(
+        enabled: _windowEnabled,
+        startMinute: _start.hour * 60 + _start.minute,
+        endMinute: _end.hour * 60 + _end.minute,
+        weekdays: _days,
+      ));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Download time window saved.')));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Invalid download window: $error')));
+    }
   }
 
   Future<void> _toggleAndroidBackground(bool enabled) async {
@@ -1375,6 +1524,80 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                 onChangeEnd: (value) =>
                     widget.controller.setMaximumActiveDownloads(value.round()),
               ),
+              Text('Maximum active downloads per website: $_perHost'),
+              Slider(
+                min: 1,
+                max: 5,
+                divisions: 4,
+                value: _perHost.toDouble(),
+                label: '$_perHost',
+                onChanged: (value) => setState(() => _perHost = value.round()),
+                onChangeEnd: (value) => widget.controller
+                    .setMaximumActivePerHost(value.round()),
+              ),
+              const Text('Queue automation avoids filling all connection '
+                  'slots with downloads from the same server. Manual queue '
+                  'priority is respected across available hosts.',
+                  style: TextStyle(fontSize: 12)),
+              const Divider(height: 32),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Recurring download window'),
+                subtitle: const Text('Automatically pause transfers outside '
+                    'the chosen device-local hours; resume ONLY tasks paused '
+                    'by this scheduler. Requires JDM to be running.'),
+                value: _windowEnabled,
+                onChanged: (value) => setState(() => _windowEnabled = value),
+              ),
+              Wrap(spacing: 5, runSpacing: 4, children: [
+                for (var index = 0; index < 7; index++)
+                  FilterChip(
+                    label: Text(const ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][index]),
+                    selected: (_days & (1 << index)) != 0,
+                    onSelected: (selected) => setState(() => _days = selected
+                        ? _days | (1 << index) : _days & ~(1 << index)),
+                  ),
+              ]),
+              Row(children: [
+                Expanded(child: OutlinedButton.icon(
+                  onPressed: () => _pickWindowTime(start: true),
+                  icon: const Icon(Icons.access_time),
+                  label: Text('From ${_start.format(context)}'),
+                )),
+                const SizedBox(width: 8),
+                Expanded(child: OutlinedButton.icon(
+                  onPressed: () => _pickWindowTime(start: false),
+                  icon: const Icon(Icons.access_time_filled),
+                  label: Text('Until ${_end.format(context)}'),
+                )),
+              ]),
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: _applyWindow,
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('Apply download window'),
+              ),
+              const SizedBox(height: 8),
+              Text(widget.controller.scheduleWindow.enabled
+                  ? widget.controller.withinDownloadWindow
+                      ? 'Current policy: OPEN (downloads allowed)'
+                      : 'Current policy: CLOSED (auto-paused)'
+                  : 'Current policy: always allowed',
+                  style: const TextStyle(fontSize: 12)),
+              const Divider(height: 32),
+              if (Platform.isWindows)
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Suggest links copied to clipboard'),
+                  subtitle: const Text('Optional local-only monitoring while '
+                      'JDM is running. No link is queued without confirmation. '
+                      'Never sends clipboard text to a server.'),
+                  value: _clipboardEnabled,
+                  onChanged: (enabled) async {
+                    setState(() => _clipboardEnabled = enabled);
+                    await widget.controller.setClipboardMonitoringEnabled(enabled);
+                  },
+                ),
               const Text('Speed limits apply to built-in HTTP and HLS '
                   'downloads, including segmented connections. External '
                   'FFmpeg transfers are not throttled.',

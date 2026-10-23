@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Download with JDM</title>
     <link rel="stylesheet" href="popup.css">
+    <link rel="stylesheet" href="scan.css">
   </head>
   <body>
     <header><span class="logo">↓</span><div><strong>Jahid Download Manager</strong><small>Windows browser integration</small></div></header>
@@ -15,6 +16,8 @@
       <input type="text" id="filename" maxlength="255" placeholder="Leave empty to infer from URL">
       <button id="send" type="submit">Send to JDM</button>
     </form>
+    <button type="button" id="scan" class="secondary">Scan active page for download links</button>
+    <div id="results" aria-live="polite"></div>
     <p id="status" role="status">Open JDM on Windows before sending a link.</p>
     <script src="popup.js"></script>
   </body>

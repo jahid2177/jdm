@@ -1,5 +1,5 @@
 JAHID DOWNLOAD MANAGER - WINDOWS BROWSER INTEGRATION
-Version 1.4.0 | Developer: Md Jahidul Islam
+Version 2.0.0 | Developer: Md Jahidul Islam
 
 The Windows installer includes the Chrome/Edge and Firefox extensions and
 the Windows native messaging host. For security, extension registration is
@@ -29,7 +29,10 @@ Browser extension installation must be approved by you. Do not change
 PowerShell execution policy to get around organization restrictions.
 
 After native host registration, restart your browser and launch JDM. Use
-the 'Download link with JDM' context menu or the toolbar extension.
+the 'Download link with JDM' context menu or the toolbar extension. The
+toolbar also has 'Scan active page for download links': this scans only
+after a click, lists public HTTP(S) links, and requires a second click for
+each link you want to add. It does not import browser cookies or DRM streams.
 
 To remove the native messaging host, run uninstall_windows.ps1 for each
 browser (e.g. -Browser Chrome), BEFORE uninstalling JDM. Removing JDM itself

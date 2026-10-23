@@ -1,4 +1,4 @@
-# JDM Browser Integration — Milestone 3
+# JDM Browser Integration — Milestones 3 and 17
 
 Native Messaging connects a user-initiated browser context-menu action to the
 running JDM Windows application. It does **not** intercept every browser
@@ -17,8 +17,10 @@ download or bypass website authentication.
 
 ## Security decisions
 
-- No webpage content scripts, remote host permissions, command execution,
-  registry-wide privileged installation, or cookie extraction.
+- No always-on content scripts, permanent remote host permissions, arbitrary
+  command execution, registry-wide privileged installation, or cookie
+  extraction. Milestone 17 adds a **user-initiated** active-tab DOM link scan
+  with `activeTab` permission and Chromium's `scripting` permission.
 - Host accepts HTTP and HTTPS URLs only; limit is 64 KiB input and 16 KiB IPC.
 - Local endpoint has a randomly chosen TCP port and 256-bit token.
 - Per-browser native host manifests list explicit extension IDs; no wildcards.
@@ -27,6 +29,11 @@ download or bypass website authentication.
 - JDM must already be running; stale bridge configs report not running.
 
 ## Current limitations
+
+The browser popup's scanner displays up to 40 HTTP(S) file/media links when
+the user selects **Scan active page for download links**. Each queued item
+requires its own confirmation click; the page is never scanned in the
+background or sent wholesale to JDM.
 
 The browser extension transfers plain direct URLs, not credentials, session
 cookies, video streams, POST bodies or signed-in browser state. Windows browser

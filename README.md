@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 14 (v1.4.0)**, a cross-platform HTTP(S)
+This repository contains **Milestones 15–20 (v2.0.0 source candidate)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -440,9 +440,79 @@ an expected digest must therefore describe the resulting saved file bytes.
 reservation. Concurrent applications can still fill the drive after a check.
 JDM preserves whatever partial data it can on an I/O failure.
 
-The v1.4.0 Windows installer name is
+The historical v1.4.0 Windows installer name was
 `JDM-Setup-v1.4.0-Windows-x64.exe`. As before, the installer and APK must be
 built through GitHub Actions; this source archive does not contain binaries.
+
+## Milestone 15 — recurring download windows and queue scheduling
+
+- **Speed and queue settings** now contains a recurring download window with
+  selectable weekdays, start/end device-local times, including overnight
+  windows that carry into the following day. Clicking **Apply download window**
+  persists the selection. This is separate from each job's existing one-shot
+  start date/time: both conditions must allow the job to begin.
+- A scheduler tick runs every 15 seconds while JDM is alive. When the window
+  closes, in-progress jobs close their transfer sockets/processes and preserve
+  partial bytes. Queued tasks become **Paused by schedule**.
+- Only scheduler-paused entries resume when the window reopens. Choose
+  **Keep paused (cancel auto-resume)** on an entry to opt it out. Manual
+  pauses and unexpected shutdown recovery remain paused until consent.
+  **Hold queued downloads** continues to block automatic starts at all times.
+- No OS wake alarm, headless Windows service, or process-independent Android
+  scheduler has been added. The user's machine must be awake, and JDM must be
+  running. Changes to time zones or DST are interpreted in device-local time.
+
+## Milestone 16 — privacy-preserving clipboard suggestions
+
+- On Windows, the new clipboard button checks for a public HTTP(S) URL on
+  demand. An opt-in **Suggest links copied to clipboard** setting scans while
+  JDM is running. It is disabled by default; copied text stays on-device.
+- Each found link requires explicit **Add to queue** approval. Ignored links
+  are not added. Duplicate links are rejected by JDM's existing URL guard.
+  URLs with embedded username/password are rejected.
+
+## Milestone 17 — on-demand browser page scanner
+
+- Chrome/Edge and Firefox extension popups include **Scan active page for
+  download links**. On user action, the extension reads visible DOM links,
+  media URLs and download attributes from the active tab only. It finds up
+  to 40 unique public HTTP(S) candidates among the first 2,500 elements.
+- A separate **Add this link to JDM** action is required for every candidate;
+  no automatic browser interception or download hijacking is enabled.
+  Browser-internal pages may disallow script injection. HTTP URLs needing
+  cookies, signed-in sessions or DRM processing are not supported.
+
+## Milestone 18 — performance and queue automation
+
+- Configurable **Maximum active downloads per website (1–5)**. The queue
+  respects the existing global simultaneous-download limit and manual order,
+  but defers work from an already-saturated source while unrelated hosts
+  may proceed. The default limit is 2 per host. Active transfers already in
+  flight when the setting changes are allowed to unwind/finish safely.
+- The queue refuses to launch a second worker for an ID whose previous
+  writer is still active, including during scheduled pause/resume transitions.
+
+## Milestone 19 — Windows UI/UX and preferences
+
+- Settings contain day chips, time pickers, schedule state and per-host queue
+  controls. The task list distinguishes **Paused by schedule** from a manual
+  pause. The status bar shows whether the download window is open or closed.
+- The top-bar theme control now cycles **System → Light → Dark**. Its choice
+  persists locally across restarts rather than resetting to System each time.
+
+## Milestone 20 — release-readiness and verification
+
+- The version is `2.0.0+20` (installer `JDM-Setup-v2.0.0-Windows-x64.exe`).
+  CI performs preflight source/manifest consistency checks, Dart formatting,
+  Flutter analysis, Flutter tests, two independent browser extension tests,
+  and the existing Windows ZIP / Windows installer / Android APK builds.
+- **GitHub Release publication is manual.** CI creates downloadable Actions
+  artifacts; it does not push tags, upload a public release or bypass GitHub
+  workflow permissions.
+- The source archive is **not a verified stable binary** until the Windows
+  and Android GitHub jobs succeed and the app is tested on actual devices.
+  In the source-editing environment only Node extension tests and Python
+  preflight can run (Flutter SDK unavailable).
 
 ### Browser extension setup on Windows
 
@@ -508,11 +578,11 @@ Some page URLs download HTML rather than embedded video.
 
 This is **not the full IDM-equivalent app**. The following are planned:
 
-- Adaptive connection tuning and configurable per-host connection limits.
+- Adaptive connection tuning beyond the new queue-level per-host limit.
 - A user-selected Storage Access Framework export path and Android 9-and-older
   public Downloads compatibility.
 - Packaging and signing browser store extensions for general distribution.
-- Automatic browser download interception (if supported by browser policies).
+- Automatic browser interception (the current feature is on-demand scanning).
 - Android-compatible licensed media muxer and advanced live capture.
 - Scheduler execution while JDM is closed, site grabber and a persistent
   Windows background *service* independent of the running tray application.
@@ -601,6 +671,11 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
 - `test/queue_rate_limit_test.dart` — queue ordering, pause/resume-all,
   preference persistence, and token-bucket timing tests.
 - `test/download_controller_test.dart` — local HTTP fixture tests.
+- `lib/download/download_schedule_window.dart` — recurring local-time policy.
+- `lib/integration/clipboard_link_detector.dart` — safe link suggestion parser.
+- `test/milestones_15_to_20_test.dart` — scheduler/queue/privacy tests.
+- `test/browser_page_scanner_test.js` — on-demand browser DOM scanner tests.
+- `tools/check_release.py` — read-only release consistency preflight.
 - `.github/workflows/build.yml` — CI builds for both platforms.
 
 ## Important limitations
@@ -611,6 +686,6 @@ provide valid byte-range responses, and expose an ETag or Last-Modified
 validator to use the segmented engine. Smaller or incompatible files use one
 stream. There is no guarantee that multiple connections will improve speed.
 
-The current milestone does not handle automatic browser interception,
+This source release does not handle automatic browser interception,
 login sessions, private-site cookies or protected media.
 Please only download material you are authorized to access.
