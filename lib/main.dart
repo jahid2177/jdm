@@ -367,6 +367,11 @@ class _DownloadHomeState extends State<DownloadHome> {
                 'Verifying SHA-256: ${record.isVerifying}\n'
                 'SHA-256 expected: ${record.expectedSha256 ?? 'Not provided'}\n'
                 'SHA-256 calculated: ${record.actualSha256 ?? 'Not calculated'}\n'
+                'Interrupted recovery available: ${record.recoveryNeeded}\n'
+                'Disk free (last check): ${_bytes(record.freeDiskBytes)}\n'
+                'Disk needed incl. reserve: ${_bytes(record.estimatedDiskBytesNeeded)}\n'
+                'Disk checked: ${record.lastDiskCheckAt == null ? 'Never' : _whenString(record.lastDiskCheckAt!)}\n'
+                'Disk advisory: ${record.diskSpaceWarning ?? 'None'}\n'
                 'Waiting for network: ${record.waitingForNetwork}\n'
                 'Original URL: ${record.url}\n'
                 'Active URL: ${record.activeUrl}\n'
@@ -405,6 +410,8 @@ class _DownloadHomeState extends State<DownloadHome> {
                   Text('Stored completed data: ${_bytes(completedBytes)}'),
                   Text('Active: ${widget.controller.activeCount}  •  Waiting for network: $waiting'),
                   Text('Failed: ${all.where((r) => r.status == DownloadStatus.failed).length}'),
+                  Text('Interrupted and recoverable: ${widget.controller.interruptedCount}'),
+                  Text('Last check flagged low disk: ${all.where((r) => r.status != DownloadStatus.completed && r.freeDiskBytes != null && r.estimatedDiskBytesNeeded != null && r.freeDiskBytes! < r.estimatedDiskBytesNeeded!).length}'),
                   Text('SHA-256 calculated: ${all.where((r) => r.actualSha256 != null).length}'),
                   Text('Expected hash verified: ${all.where((r) => r.status == DownloadStatus.completed && r.expectedSha256 != null && r.actualSha256 == r.expectedSha256).length}'),
                   const Divider(height: 28),
@@ -484,35 +491,98 @@ class _DownloadHomeState extends State<DownloadHome> {
     );
   }
 
+  Future<void> _recoverInterrupted() async {
+    final count = widget.controller.interruptedCount;
+    if (count == 0) {
+      if (mounted) _message('No interrupted downloads need recovery.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Recover interrupted downloads?'),
+        content: Text('Resume $count downloads that were active when JDM '
+            'last stopped unexpectedly? Deliberately paused tasks and '
+            'completed files are untouched. Saved byte ranges are only '
+            'reused when their server identity can be verified. '
+            'If the queue is held, recovered tasks will wait.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Recover')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final recovered = await widget.controller.recoverInterruptedDownloads();
+    if (mounted) _message('Queued $recovered interrupted downloads for recovery.');
+  }
+
+  Future<void> _refreshDiskHealth() async {
+    for (final record in widget.controller.downloads) {
+      if (record.status == DownloadStatus.completed) continue;
+      try {
+        await widget.controller.inspectDiskSpace(record,
+            assemblyBytes: record.segments.isNotEmpty
+                ? record.totalBytes ?? 0 : 0);
+      } catch (error) {
+        debugPrint('Disk health check could not inspect ${record.id}: $error');
+      }
+    }
+  }
+
   Future<void> _monitoring() => showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('Live download monitoring'),
+          title: const Text('Download Health Dashboard'),
           content: SizedBox(
-            width: 540,
-            height: 380,
+            width: MediaQuery.sizeOf(dialogContext).width < 700
+                ? MediaQuery.sizeOf(dialogContext).width - 80 : 620,
+            height: MediaQuery.sizeOf(dialogContext).height < 610
+                ? MediaQuery.sizeOf(dialogContext).height - 190 : 440,
             child: ListenableBuilder(
               listenable: widget.controller,
               builder: (context, _) {
-                final active = widget.controller.downloads.where((record) =>
-                    record.status == DownloadStatus.downloading ||
-                    record.waitingForNetwork ||
-                    record.retryAt != null).toList();
+                final monitored = widget.controller.downloads.where((record) =>
+                    record.status != DownloadStatus.completed).toList();
+                final activeCount = monitored.where((r) =>
+                    r.status == DownloadStatus.downloading).length;
+                final stalledCount = monitored.where((r) => r.isStalled).length;
+                final lowDiskCount = monitored.where((r) =>
+                    r.freeDiskBytes != null && r.estimatedDiskBytesNeeded != null &&
+                    r.freeDiskBytes! < r.estimatedDiskBytesNeeded!).length;
                 final samples = widget.controller.speedHistory;
                 final average = samples.isEmpty ? 0.0 :
                     samples.fold<double>(0, (sum, s) => sum + s.bytesPerSecond) /
                         samples.length;
                 return Column(children: [
-                  Text('Now: ${_bytes(widget.controller.latestSpeedBytesPerSecond.toInt())}/s'
-                      ' • Recent average: ${_bytes(average.toInt())}/s'),
+                  Align(alignment: Alignment.centerLeft,
+                    child: Text('Current: ${_bytes(widget.controller.latestSpeedBytesPerSecond.toInt())}/s'
+                        ' • Last minute: ${_bytes(average.toInt())}/s')),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 6, runSpacing: 2, children: [
+                    Chip(avatar: const Icon(Icons.downloading, size: 17),
+                        label: Text('$activeCount active')),
+                    Chip(avatar: const Icon(Icons.pause_circle_outline, size: 17),
+                        label: Text('$stalledCount potentially stalled')),
+                    Chip(avatar: const Icon(Icons.sd_storage_outlined, size: 17),
+                        label: Text('$lowDiskCount low disk')),
+                    Chip(avatar: const Icon(Icons.restore, size: 17),
+                        label: Text('${widget.controller.interruptedCount} recoverable')),
+                  ]),
                   const SizedBox(height: 12),
-                  Expanded(child: active.isEmpty
-                      ? const Center(child: Text('No active or waiting downloads.'))
+                  Expanded(child: monitored.isEmpty
+                      ? const Center(child: Text('All downloads are completed or the list is empty.'))
                       : ListView.builder(
-                          itemCount: active.length,
+                          itemCount: monitored.length,
                           itemBuilder: (context, index) {
-                            final record = active[index];
-                            final health = record.waitingForNetwork
+                            final record = monitored[index];
+                            final health = record.recoveryNeeded
+                                ? 'Interrupted — manual recovery available'
+                                : record.diskSpaceWarning?.startsWith('Low disk') == true
+                                    ? 'Disk space too low'
+                                : record.waitingForNetwork
                                 ? 'Waiting for network'
                                 : record.isVerifying
                                     ? 'Verifying SHA-256 before publishing'
@@ -520,8 +590,7 @@ class _DownloadHomeState extends State<DownloadHome> {
                                     ? 'No bytes received for 15+ seconds'
                                     : record.retryAt != null
                                         ? 'Waiting for retry'
-                                        : record.lastProgressAt == null
-                                            ? 'Connecting' : 'Receiving / processing';
+                                    : record.status.name;
                             return ListTile(
                               dense: true,
                               title: Text(record.fileName,
@@ -530,7 +599,9 @@ class _DownloadHomeState extends State<DownloadHome> {
                                   ' / ${_bytes(record.totalBytes)}\n'
                                   '${_bytes(record.bytesPerSecond.toInt())}/s • '
                                   'ETA ${_durationLabel(record.estimatedTimeRemaining)}'
-                                  ' • ${record.retryPolicy.name} retry'),
+                                  ' • ${record.retryPolicy.name} retry\n'
+                                  'Disk free: ${_bytes(record.freeDiskBytes)}'
+                                  ' • Need: ${_bytes(record.estimatedDiskBytesNeeded)}'),
                               isThreeLine: true,
                             );
                           },
@@ -539,8 +610,21 @@ class _DownloadHomeState extends State<DownloadHome> {
               },
             ),
           ),
-          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'))],
+          actions: [
+            TextButton.icon(
+              onPressed: _refreshDiskHealth,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Check disk')),
+            TextButton.icon(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await _recoverInterrupted();
+              },
+              icon: const Icon(Icons.restore),
+              label: const Text('Recover interrupted')),
+            TextButton(onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close')),
+          ],
         ),
       );
 
@@ -638,7 +722,7 @@ class _DownloadHomeState extends State<DownloadHome> {
           ),
           actions: [
             IconButton(
-              tooltip: 'Live monitoring and ETA',
+              tooltip: 'Download Health Dashboard and Recovery',
               icon: const Icon(Icons.monitor_heart_outlined),
               onPressed: _monitoring,
             ),
@@ -794,7 +878,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 1.3.0 • Md Jahidul Islam',
+              child: Text('JDM 1.4.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -1005,6 +1089,13 @@ class _DownloadHomeState extends State<DownloadHome> {
                     Text('${record.isVerifying ? 'Verifying SHA-256' : 'ETA: ${_durationLabel(record.estimatedTimeRemaining)}'}'
                         '${record.isStalled ? ' • No bytes received for 15+ s' : ''}',
                         style: const TextStyle(fontSize: 11)),
+                  if (record.recoveryNeeded)
+                    const Text('Interrupted earlier • Open Health Dashboard to recover',
+                        style: TextStyle(color: Colors.orange, fontSize: 11)),
+                  if (record.diskSpaceWarning != null &&
+                      record.diskSpaceWarning!.startsWith('Low disk'))
+                    Text(record.diskSpaceWarning!,
+                        style: const TextStyle(color: Colors.red, fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
                     Text(record.error!, style: const TextStyle(color: Colors.red,
@@ -1133,6 +1224,7 @@ class _DownloadHomeState extends State<DownloadHome> {
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         child: Text('${all.length} total downloads • '
             '${widget.controller.activeCount} active • '
+            '${widget.controller.interruptedCount} recoverable • '
             '${widget.controller.queuePaused ? 'Queue held' : 'Queue running'} • '
             'Speed limit: ${widget.controller.speedLimitKibPerSecond == 0 ? 'Unlimited' : '${widget.controller.speedLimitKibPerSecond} KiB/s'} • '
             'Save folder: ${widget.controller.downloadDirectory.path}',

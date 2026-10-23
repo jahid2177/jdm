@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 13 (v1.3.0)**, a cross-platform HTTP(S)
+This repository contains **Milestone 14 (v1.4.0)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -398,8 +398,50 @@ matching hash confirms downloaded bytes match that value, not that the source
 is harmless. Streaming HLS or DASH outputs are hashed after remux/assembly;
 an expected digest must therefore describe the resulting saved file bytes.
 
-The v1.3.0 Windows installer name is
-`JDM-Setup-v1.3.0-Windows-x64.exe`. As before, the installer and APK must be
+## New in Milestone 14 — download health, disk space and safe recovery
+
+- **Download Health Dashboard:** The heart/monitor toolbar action now shows
+  active downloads, potentially stalled transfers, items flagged for low disk
+  space and downloads eligible for recovery after an unexpected shutdown.
+  Per-item rows show throughput, ETA, latest space measurement and the storage
+  estimate. The **Check disk** action refreshes disk observations without
+  restarting a transfer.
+- **Disk Space Guard:** Before writing known-length direct HTTP responses, and
+  before segmented downloads and their final assembly, JDM checks available
+  space using Android's `StatFs` or Windows' `DriveInfo.AvailableFreeSpace`.
+  A configurable safety reserve defaults to 64 MiB. Segmented downloads
+  account for the extra assembled output alongside segment files. If confirmed
+  available space is insufficient, the task fails without deleting existing
+  partial files; free space and use **Resume / Retry**. HLS/DASH streams and
+  unknown-length HTTP responses can only have their reserve checked upfront.
+  Single-stream HTTP transfers also recheck every 32 MiB while receiving data.
+  When the platform cannot query a destination (e.g., Windows UNC paths), the
+  space is shown as **unknown** and the transfer is allowed to proceed.
+- **Recovery Center:** Unexpectedly interrupted in-progress entries are
+  restored as paused, with a persisted recovery marker. A confirmation in the
+  Health Dashboard queues **only these interrupted items**. Deliberately
+  paused, failed, and completed items are not resumed by this action. Queue
+  pause and concurrency limits remain in force.
+- **Finish already downloaded data without network:** If a direct file's
+  temporary length matches the saved size, or all durable segmented bytes
+  were written before shutdown, JDM can finish assembling and SHA-256 hashing
+  locally without fetching those same bytes again. Fully committed HLS output
+  is also eligible. No completed user file is silently overwritten.
+- **Safer single-stream resume:** Partial HTTP data is appended only when the
+  server confirms its saved strong ETag or Last-Modified validator on a valid
+  byte-range response. Without a stored validator, JDM restarts the response
+  from byte zero instead of mixing two possibly different resources. Existing
+  unverified bytes remain until a successful HTTP response is accepted.
+- Added offline/local HTTP tests for disk estimates, low-capacity refusal,
+  retry after disk space becomes available, interrupted-job recovery,
+  full-partial local completion, and missing-validator safety.
+
+**Note:** Space availability is a point-in-time observation, not a disk-space
+reservation. Concurrent applications can still fill the drive after a check.
+JDM preserves whatever partial data it can on an I/O failure.
+
+The v1.4.0 Windows installer name is
+`JDM-Setup-v1.4.0-Windows-x64.exe`. As before, the installer and APK must be
 built through GitHub Actions; this source archive does not contain binaries.
 
 ### Browser extension setup on Windows

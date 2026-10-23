@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'download_record.dart';
 import 'download_history_backup.dart';
 import 'download_rate_limiter.dart';
+import 'download_storage_guard.dart';
 import 'segmented_downloader.dart';
 import '../video/hls_vod_downloader.dart';
 import '../video/ffmpeg_muxer.dart';
@@ -54,7 +55,10 @@ class DownloadController extends ChangeNotifier {
     this.retryBaseDelay = const Duration(seconds: 2),
     this.reconnectBaseDelay = const Duration(seconds: 5),
     this.speedSampleInterval = const Duration(seconds: 1),
-  });
+    FreeDiskBytesReader? freeDiskBytesReader,
+    int diskReserveBytes = 64 * 1024 * 1024,
+  }) : _storageGuard = DownloadStorageGuard(
+          reader: freeDiskBytesReader, reserveBytes: diskReserveBytes);
 
   factory DownloadController.forTesting(
     Directory stateDirectory,
@@ -65,6 +69,8 @@ class DownloadController extends ChangeNotifier {
     Duration retryBaseDelay = const Duration(seconds: 2),
     Duration reconnectBaseDelay = const Duration(seconds: 5),
     Duration speedSampleInterval = const Duration(seconds: 1),
+    FreeDiskBytesReader? freeDiskBytesReader,
+    int diskReserveBytes = 64 * 1024 * 1024,
   ) => DownloadController._(
         stateDirectory,
         downloadDirectory,
@@ -74,6 +80,8 @@ class DownloadController extends ChangeNotifier {
         retryBaseDelay: retryBaseDelay,
         reconnectBaseDelay: reconnectBaseDelay,
         speedSampleInterval: speedSampleInterval,
+        freeDiskBytesReader: freeDiskBytesReader,
+        diskReserveBytes: diskReserveBytes,
       );
 
   static Future<DownloadController> create() async {
@@ -104,6 +112,7 @@ class DownloadController extends ChangeNotifier {
   final Duration retryBaseDelay;
   final Duration reconnectBaseDelay;
   final Duration speedSampleInterval;
+  final DownloadStorageGuard _storageGuard;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
   final Map<String, Process> _processes = {};
@@ -145,6 +154,46 @@ class DownloadController extends ChangeNotifier {
             ? 5 : maxAutomaticRetries,
         DownloadRetryPolicy.never => 0,
       };
+
+  int get interruptedCount => _records.where((record) =>
+      record.recoveryNeeded && record.status == DownloadStatus.paused).length;
+
+  /// Inspect capacity without mutating task status. An unknown capacity is
+  /// shown explicitly and does not imply sufficient space.
+  Future<DiskSpaceAssessment> inspectDiskSpace(DownloadRecord record, {
+    int? remainingBytes,
+    int assemblyBytes = 0,
+  }) async {
+    final left = remainingBytes ?? (record.totalBytes == null
+        ? null : (record.totalBytes! - record.downloadedBytes).clamp(0, record.totalBytes!).toInt());
+    final assessment = await _storageGuard.assess(record.savePath,
+        bytesStillToWrite: left, assemblyBytes: assemblyBytes);
+    record.freeDiskBytes = assessment.freeBytes;
+    record.estimatedDiskBytesNeeded = assessment.neededBytes;
+    record.lastDiskCheckAt = DateTime.now();
+    record.diskSpaceWarning = assessment.insufficient
+        ? 'Low disk space: ${assessment.freeBytes} bytes free, '
+            '${assessment.neededBytes} bytes needed.'
+        : !assessment.canConfirmSpace
+            ? 'Free space cannot be measured on this destination.'
+            : !assessment.totalSizeKnown
+                ? 'File size unknown; only the safety reserve was checked.'
+                : null;
+    notifyListeners();
+    return assessment;
+  }
+
+  Future<void> _ensureDiskSpace(DownloadRecord record, {
+    required int? remainingBytes,
+    int assemblyBytes = 0,
+  }) async {
+    final assessment = await inspectDiskSpace(record,
+        remainingBytes: remainingBytes, assemblyBytes: assemblyBytes);
+    if (assessment.insufficient) {
+      throw InsufficientDiskSpaceException(
+          assessment.freeBytes!, assessment.neededBytes);
+    }
+  }
 
   String categoryDirectoryPath(DownloadCategory category) =>
       '${downloadDirectory.path}${Platform.pathSeparator}JDM'
@@ -216,9 +265,12 @@ class DownloadController extends ChangeNotifier {
         // Recover from the previous snapshot if a write was interrupted.
       }
     }
+    var recoveredState = false;
     for (final record in _records) {
       if (record.status == DownloadStatus.downloading) {
         record.status = DownloadStatus.paused;
+        record.recoveryNeeded = true;
+        recoveredState = true;
       }
       if (record.status != DownloadStatus.completed) {
         if (record.kind == DownloadKind.hls) {
@@ -231,6 +283,7 @@ class DownloadController extends ChangeNotifier {
           } catch (error) {
             record.status = DownloadStatus.failed;
             record.error = error.toString();
+            recoveredState = true;
           }
         } else {
           final part = _partialFile(record);
@@ -240,6 +293,7 @@ class DownloadController extends ChangeNotifier {
     }
     notifyListeners();
     _speedTimer ??= Timer.periodic(speedSampleInterval, (_) => _sampleSpeed());
+    if (recoveredState) await _save();
     _pump();
   }
 
@@ -685,9 +739,22 @@ class DownloadController extends ChangeNotifier {
     record.retryAttempts = 0;
     record.waitingForNetwork = false;
     record.reconnectChecks = 0;
+    record.recoveryNeeded = false;
     notifyListeners();
     await _save();
     _pump();
+  }
+
+  /// Resumes only tasks that were active during an unexpected previous exit.
+  /// Never touches intentionally paused tasks, failed tasks or completed files.
+  /// Existing HTTP validators and segment identities still govern resumption.
+  Future<int> recoverInterruptedDownloads() async {
+    final interrupted = _records.where((record) =>
+        record.status == DownloadStatus.paused && record.recoveryNeeded).toList();
+    for (final record in interrupted) {
+      await resume(record.id);
+    }
+    return interrupted.length;
   }
 
   /// Discards only JDM-managed partial bytes and queues a clean download.
@@ -720,6 +787,8 @@ class DownloadController extends ChangeNotifier {
     record.error = null;
     record.bytesPerSecond = 0;
     record.lastProgressAt = null;
+    record.recoveryNeeded = false;
+    record.diskSpaceWarning = null;
     record.status = DownloadStatus.queued;
     notifyListeners();
     await _save();
@@ -780,6 +849,7 @@ class DownloadController extends ChangeNotifier {
     record.status = DownloadStatus.downloading;
     record.error = null;
     record.retryAt = null;
+    record.recoveryNeeded = false;
     record.isVerifying = false;
     record.lastProgressAt = DateTime.now();
     notifyListeners();
@@ -899,6 +969,7 @@ class DownloadController extends ChangeNotifier {
   Future<void> _download(DownloadRecord record) async {
     final part = _partialFile(record);
     await part.parent.create(recursive: true);
+    if (await _finalizeRecoveredBytes(record, part)) return;
     if (record.kind == DownloadKind.hls) {
       await _downloadHls(record, part);
       return;
@@ -961,6 +1032,12 @@ class DownloadController extends ChangeNotifier {
         await _save();
       }
       if (record.segments.isNotEmpty) {
+        final segmentTotal = record.totalBytes;
+        await _ensureDiskSpace(record,
+            remainingBytes: segmentTotal == null ? null :
+                (segmentTotal - record.downloadedBytes).clamp(0, segmentTotal).toInt(),
+            assemblyBytes: segmentTotal ?? 0);
+        if (record.status != DownloadStatus.downloading) return;
         final client = HttpClient()
           ..autoUncompress = false
           ..connectionTimeout = const Duration(seconds: 25)
@@ -988,6 +1065,9 @@ class DownloadController extends ChangeNotifier {
           },
         );
         if (record.status != DownloadStatus.downloading) return;
+        await _ensureDiskSpace(record, remainingBytes: 0,
+            assemblyBytes: record.totalBytes ?? 0);
+        if (record.status != DownloadStatus.downloading) return;
         await SegmentedDownloader.assemble(record, part);
         final segmentBasePath = record.savePath;
         await _finalizeFile(record, part);
@@ -1008,8 +1088,60 @@ class DownloadController extends ChangeNotifier {
     }
   }
 
+  /// If the application stopped after the final byte was written but before
+  /// the atomic rename, finish from already-verified temporary lengths.
+  /// Streaming SHA-256 still runs inside _finalizeFile before publication.
+  Future<bool> _finalizeRecoveredBytes(DownloadRecord record, File part) async {
+    if (record.segments.isNotEmpty && record.totalBytes != null &&
+        record.segments.every((segment) => segment.complete) &&
+        record.segments.fold<int>(0, (sum, segment) => sum + segment.length) ==
+            record.totalBytes) {
+      final existingAssembly = await part.exists() &&
+          await part.length() == record.totalBytes;
+      await _ensureDiskSpace(record, remainingBytes: 0,
+          assemblyBytes: existingAssembly ? 0 : record.totalBytes!);
+      if (record.status != DownloadStatus.downloading) return true;
+      if (!existingAssembly) await SegmentedDownloader.assemble(record, part);
+      if (record.status != DownloadStatus.downloading) return true;
+      final segmentBasePath = record.savePath;
+      await _finalizeFile(record, part);
+      if (record.status != DownloadStatus.downloading) return true;
+      try {
+        await SegmentedDownloader.deleteSegments(
+            record, basePath: segmentBasePath);
+      } catch (error) {
+        debugPrint('Could not remove recovered segments: $error');
+      }
+      record.segments.clear();
+      return true;
+    }
+    if (!await part.exists()) return false;
+    final length = await part.length();
+    if (record.kind == DownloadKind.hls) {
+      if (record.hlsTotalSegments > 0 &&
+          record.hlsCompletedSegments == record.hlsTotalSegments &&
+          record.hlsCommittedBytes == length) {
+        await _finalizeFile(record, part);
+        return true;
+      }
+    } else if (record.segments.isEmpty &&
+        (record.kind == DownloadKind.file || record.kind == DownloadKind.directVideo) &&
+        record.totalBytes != null && record.totalBytes == length) {
+      await _finalizeFile(record, part);
+      return true;
+    }
+    return false;
+  }
+
   Future<void> _downloadSingle(DownloadRecord record, File part) async {
     var existing = await part.exists() ? await part.length() : 0;
+    final savedValidator = record.etag != null && !record.etag!.startsWith('W/')
+        ? record.etag : record.lastModified;
+    // Never combine bytes when the remote resource identity was never saved.
+    // On a successful HTTP 200 response the old part is overwritten.
+    if (existing > 0 && savedValidator == null) {
+      existing = 0;
+    }
     final client = HttpClient()
       ..autoUncompress = false
       ..connectionTimeout = const Duration(seconds: 25);
@@ -1020,10 +1152,7 @@ class DownloadController extends ChangeNotifier {
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     if (existing > 0) {
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$existing-');
-      final validator = record.etag != null && !record.etag!.startsWith('W/')
-          ? record.etag
-          : record.lastModified;
-      if (validator != null) request.headers.set('If-Range', validator);
+      request.headers.set('If-Range', savedValidator!);
     }
     final response = await request.close();
     if (response.statusCode != HttpStatus.ok &&
@@ -1075,8 +1204,12 @@ class DownloadController extends ChangeNotifier {
       total = int.parse(match.group(3)!);
       if (end >= total) throw const FormatException('Invalid range total.');
       final freshEtag = response.headers.value(HttpHeaders.etagHeader);
-      if (record.etag != null && freshEtag != null && freshEtag != record.etag) {
-        throw const FormatException('The remote file changed.');
+      final freshValidator = record.etag != null && !record.etag!.startsWith('W/')
+          ? freshEtag : response.headers.value(HttpHeaders.lastModifiedHeader);
+      if (existing > 0 && (savedValidator == null ||
+          freshValidator != savedValidator)) {
+        throw const FormatException('Cannot safely resume: server did not '
+            'confirm the saved ETag/Last-Modified. Use Restart from zero.');
       }
       mode = FileMode.append;
     } else {
@@ -1093,11 +1226,15 @@ class DownloadController extends ChangeNotifier {
     record.lastModified = response.headers.value(HttpHeaders.lastModifiedHeader) ??
         record.lastModified;
     record.downloadedBytes = existing;
+    await _ensureDiskSpace(record, remainingBytes: total == null
+        ? null : (total - existing).clamp(0, total).toInt());
+    if (record.status != DownloadStatus.downloading) return;
     notifyListeners();
 
     final writer = await part.open(mode: mode);
     var lastNotify = DateTime.now();
     var lastSpeedBytes = existing;
+    var nextSpaceCheckAt = existing + 32 * 1024 * 1024;
     try {
       await for (final bytes in response) {
         if (record.status != DownloadStatus.downloading) break;
@@ -1108,6 +1245,11 @@ class DownloadController extends ChangeNotifier {
         if (record.status != DownloadStatus.downloading) break;
         await writer.writeFrom(bytes);
         record.downloadedBytes += bytes.length;
+        if (record.downloadedBytes >= nextSpaceCheckAt) {
+          await _ensureDiskSpace(record, remainingBytes: total == null
+              ? null : (total - record.downloadedBytes).clamp(0, total).toInt());
+          nextSpaceCheckAt = record.downloadedBytes + 32 * 1024 * 1024;
+        }
         final now = DateTime.now();
         record.lastProgressAt = now;
         final elapsed = now.difference(lastNotify).inMilliseconds;
@@ -1146,6 +1288,8 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<void> _downloadHls(DownloadRecord record, File partialFile) async {
+    await _ensureDiskSpace(record, remainingBytes: null);
+    if (record.status != DownloadStatus.downloading) return;
     final client = HttpClient()
       ..autoUncompress = false
       ..connectionTimeout = const Duration(seconds: 25);
@@ -1214,6 +1358,8 @@ class DownloadController extends ChangeNotifier {
         'before starting JDM. Android remuxing is not included.',
       );
     }
+    await _ensureDiskSpace(record, remainingBytes: null);
+    if (record.status != DownloadStatus.downloading) return;
     final source = Uri.parse(record.url);
     if (checkDash) await FfmpegMuxer.checkUnprotectedDash(source);
     if (record.status != DownloadStatus.downloading) return;

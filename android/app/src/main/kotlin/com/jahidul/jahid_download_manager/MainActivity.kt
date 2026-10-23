@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.StatFs
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import io.flutter.embedding.android.FlutterActivity
@@ -23,6 +24,7 @@ import java.util.Locale
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "com.jahidul.jdm/files"
+        private const val STORAGE_CHANNEL = "com.jahidul.jdm/storage"
         private const val COMPLETION_CHANNEL = "jdm_download_complete"
         private const val FAILURE_CHANNEL = "jdm_download_failed"
         private const val NOTIFICATION_PERMISSION_REQUEST = 9038
@@ -32,6 +34,31 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method != "availableBytes") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val path = call.argument<String>("path")
+                if (path.isNullOrBlank()) {
+                    result.error("INVALID_PATH", "Missing storage path", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    // New category folders do not exist until the first write.
+                    // StatFs must inspect their nearest existing ancestor.
+                    var folder: File? = File(path).absoluteFile.parentFile
+                    while (folder != null && !folder.exists()) {
+                        folder = folder.parentFile
+                    }
+                    val existingFolder = folder
+                        ?: throw IOException("No existing storage directory")
+                    result.success(StatFs(existingFolder.path).availableBytes)
+                } catch (failure: Exception) {
+                    result.error("DISK_SPACE_UNAVAILABLE", failure.message, null)
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
