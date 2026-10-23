@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'download_record.dart';
 import 'segmented_downloader.dart';
 import '../video/hls_vod_downloader.dart';
+import '../video/ffmpeg_muxer.dart';
 import '../video/video_source_detector.dart';
 
 /// Streaming HTTP(S) downloader shared by Windows and Android.
@@ -18,6 +19,7 @@ class DownloadController extends ChangeNotifier {
     this.downloadDirectory, {
     this.segmentThresholdBytes = 2 * 1024 * 1024,
     this.connectionsPerFile = 4,
+    this.ffmpegExecutable,
   });
 
   factory DownloadController.forTesting(
@@ -25,11 +27,13 @@ class DownloadController extends ChangeNotifier {
     Directory downloadDirectory, {
     int segmentThresholdBytes = 2 * 1024 * 1024,
     int connectionsPerFile = 4,
+    String? ffmpegExecutable,
   ) => DownloadController._(
         stateDirectory,
         downloadDirectory,
         segmentThresholdBytes: segmentThresholdBytes,
         connectionsPerFile: connectionsPerFile,
+        ffmpegExecutable: ffmpegExecutable,
       );
 
   static Future<DownloadController> create() async {
@@ -37,7 +41,14 @@ class DownloadController extends ChangeNotifier {
     final publicDownloads = Platform.isWindows ? await getDownloadsDirectory() : null;
     // Android scoped storage initially uses an app-private folder.
     final downloads = publicDownloads ?? await getApplicationDocumentsDirectory();
-    final controller = DownloadController._(stateDirectory, downloads);
+    final executable = Platform.isWindows
+        ? Platform.environment['JDM_FFMPEG_PATH']
+        : null;
+    final controller = DownloadController._(
+      stateDirectory,
+      downloads,
+      ffmpegExecutable: executable?.trim().isEmpty == true ? null : executable,
+    );
     await controller.initialize();
     return controller;
   }
@@ -46,9 +57,12 @@ class DownloadController extends ChangeNotifier {
   final Directory downloadDirectory;
   final int segmentThresholdBytes;
   final int connectionsPerFile;
+  final String? ffmpegExecutable;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
+  final Map<String, Process> _processes = {};
   final Set<String> _activeIds = {};
+  Timer? _scheduleTimer;
   Future<void> _pendingSave = Future.value();
   Future<void> _finalizeBarrier = Future.value();
   int _sequence = 0;
@@ -99,6 +113,7 @@ class DownloadController extends ChangeNotifier {
       }
     }
     notifyListeners();
+    _pump();
   }
 
   static String safeName(String value) {
@@ -114,7 +129,12 @@ class DownloadController extends ChangeNotifier {
     return name.length > 180 ? name.substring(0, 180) : name;
   }
 
-  Future<DownloadRecord> addUrl(String input, {String? fileName}) async {
+  Future<DownloadRecord> addUrl(
+    String input, {
+    String? fileName,
+    VideoQuality quality = VideoQuality.highest,
+    DateTime? scheduledAt,
+  }) async {
     final uri = Uri.tryParse(input.trim());
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty || uri.userInfo.isNotEmpty) {
@@ -138,6 +158,8 @@ class DownloadController extends ChangeNotifier {
       savePath: '${downloadDirectory.path}${Platform.pathSeparator}$name',
       createdAt: DateTime.now(),
       kind: kind,
+      videoQuality: quality,
+      scheduledAt: scheduledAt,
     );
     _records.insert(0, record);
     notifyListeners();
@@ -151,11 +173,14 @@ class DownloadController extends ChangeNotifier {
 
   Future<void> pause(String id) async {
     final record = _find(id);
-    if (record == null || record.status != DownloadStatus.downloading) return;
+    if (record == null || (record.status != DownloadStatus.downloading &&
+        record.status != DownloadStatus.queued)) return;
     record.status = DownloadStatus.paused;
     _clients[id]?.close(force: true);
+    _processes[id]?.kill();
     notifyListeners();
     await _save();
+    _pump();
   }
 
   Future<void> resume(String id) async {
@@ -164,6 +189,8 @@ class DownloadController extends ChangeNotifier {
     // A paused socket may still be unwinding; wait for its writer to close.
     if (_activeIds.contains(id)) await waitForIdle(id: id);
     record.status = DownloadStatus.queued;
+    // Explicit manual Resume means "start now" even if it was scheduled.
+    record.scheduledAt = null;
     record.error = null;
     notifyListeners();
     await _save();
@@ -184,6 +211,7 @@ class DownloadController extends ChangeNotifier {
     _records.remove(record);
     notifyListeners();
     await _save();
+    _pump();
   }
 
   DownloadRecord? _find(String id) {
@@ -194,11 +222,27 @@ class DownloadController extends ChangeNotifier {
   }
 
   void _pump() {
+    _scheduleTimer?.cancel();
+    _scheduleTimer = null;
+    DateTime? nextDue;
+    final now = DateTime.now();
     for (final record in _records.reversed) {
-      if (_activeIds.length >= maxSimultaneous) break;
       if (record.status != DownloadStatus.queued) continue;
+      final due = record.scheduledAt;
+      if (due != null && due.isAfter(now)) {
+        if (nextDue == null || due.isBefore(nextDue)) nextDue = due;
+        continue;
+      }
+      if (_activeIds.length >= maxSimultaneous) continue;
       _activeIds.add(record.id);
       unawaited(_run(record));
+    }
+    if (nextDue != null) {
+      final wait = nextDue.difference(DateTime.now());
+      // Recheck at least daily, allowing adjustment of system clocks.
+      final bounded = wait > const Duration(days: 1)
+          ? const Duration(days: 1) : wait;
+      _scheduleTimer = Timer(bounded.isNegative ? Duration.zero : bounded, _pump);
     }
   }
 
@@ -220,6 +264,7 @@ class DownloadController extends ChangeNotifier {
       }
     } finally {
       _clients.remove(record.id)?.close(force: true);
+      _processes.remove(record.id);
       _activeIds.remove(record.id);
       notifyListeners();
       try {
@@ -239,7 +284,8 @@ class DownloadController extends ChangeNotifier {
       return;
     }
     if (record.kind == DownloadKind.dash) {
-      throw UnsupportedError('DASH/MPD detected. Audio/video segment merging is not yet supported.');
+      await _downloadWithFfmpeg(record, part, checkDash: true);
+      return;
     }
     final existing = await part.exists() ? await part.length() : 0;
     if (record.segments.isNotEmpty || existing == 0) {
@@ -257,7 +303,8 @@ class DownloadController extends ChangeNotifier {
           return;
         }
         if (detected == DownloadKind.dash) {
-          throw UnsupportedError('DASH/MPD detected. A media muxer is required.');
+          await _downloadWithFfmpeg(record, _partialFile(record), checkDash: true);
+          return;
         }
       }
       if (record.segments.isNotEmpty) {
@@ -379,7 +426,8 @@ class DownloadController extends ChangeNotifier {
             await _downloadHls(record, _partialFile(record));
             return;
           }
-          throw UnsupportedError('DASH/MPD detected. A media muxer is required.');
+          await _downloadWithFfmpeg(record, _partialFile(record), checkDash: true);
+          return;
         }
         notifyListeners();
       }
@@ -478,37 +526,95 @@ class DownloadController extends ChangeNotifier {
     var lastMs = 0;
     var lastBytes = record.downloadedBytes;
     var lastCompletedSegments = record.hlsCompletedSegments;
-    await HlsVodDownloader.download(
-      client: client,
-      record: record,
-      partialFile: partialFile,
-      isDownloading: () => record.status == DownloadStatus.downloading,
-      persist: _save,
-      onProgress: () {
-        if (record.downloadedBytes < lastBytes) {
-          lastBytes = record.downloadedBytes;
-          lastMs = clock.elapsedMilliseconds;
-        }
-        final elapsed = clock.elapsedMilliseconds - lastMs;
-        if (elapsed >= 500) {
-          record.bytesPerSecond =
-              (record.downloadedBytes - lastBytes) * 1000 / elapsed;
-          lastMs = clock.elapsedMilliseconds;
-          lastBytes = record.downloadedBytes;
-        }
-        if (elapsed >= 500 ||
-            lastCompletedSegments != record.hlsCompletedSegments) {
-          lastCompletedSegments = record.hlsCompletedSegments;
-          notifyListeners();
-        }
-      },
-    );
+    try {
+      await HlsVodDownloader.download(
+        client: client,
+        record: record,
+        partialFile: partialFile,
+        isDownloading: () => record.status == DownloadStatus.downloading,
+        persist: _save,
+        onProgress: () {
+          if (record.downloadedBytes < lastBytes) {
+            lastBytes = record.downloadedBytes;
+            lastMs = clock.elapsedMilliseconds;
+          }
+          final elapsed = clock.elapsedMilliseconds - lastMs;
+          if (elapsed >= 500) {
+            record.bytesPerSecond =
+                (record.downloadedBytes - lastBytes) * 1000 / elapsed;
+            lastMs = clock.elapsedMilliseconds;
+            lastBytes = record.downloadedBytes;
+          }
+          if (elapsed >= 500 ||
+              lastCompletedSegments != record.hlsCompletedSegments) {
+            lastCompletedSegments = record.hlsCompletedSegments;
+            notifyListeners();
+          }
+        },
+      );
+    } on UnsupportedHlsException catch (error) {
+      final reason = error.reason;
+      if (reason == 'fragmented MP4 needs a muxer' ||
+          reason == 'separate audio renditions require a muxer' ||
+          reason == 'unsupported feature #EXT-X-MAP') {
+        _clients.remove(record.id)?.close(force: true);
+        await _downloadWithFfmpeg(record, partialFile);
+        return;
+      }
+      rethrow;
+    }
     if (record.status != DownloadStatus.downloading) return;
     if (record.hlsCompletedSegments != record.hlsTotalSegments ||
         record.hlsTotalSegments == 0) {
       throw StateError('The HLS video is missing segments.');
     }
     await _finalizeFile(record, partialFile);
+  }
+
+  Future<void> _downloadWithFfmpeg(
+    DownloadRecord record,
+    File previousPartial, {
+    bool checkDash = false,
+  }) async {
+    final executable = ffmpegExecutable;
+    if (executable == null || executable.isEmpty) {
+      throw UnsupportedError(
+        '${checkDash ? 'DASH/MPD' : 'HLS fMP4/separate audio'} requires '
+        'FFmpeg. On Windows set JDM_FFMPEG_PATH to your ffmpeg.exe path '
+        'before starting JDM. Android remuxing is not included.',
+      );
+    }
+    final source = Uri.parse(record.url);
+    if (checkDash) await FfmpegMuxer.checkUnprotectedDash(source);
+    if (record.status != DownloadStatus.downloading) return;
+
+    final dot = record.fileName.lastIndexOf('.');
+    final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
+    record.fileName = safeName('$stem.mp4');
+    record.savePath =
+        '${downloadDirectory.path}${Platform.pathSeparator}${record.fileName}';
+    final part = _partialFile(record);
+    if (previousPartial.path != part.path && await previousPartial.exists()) {
+      await previousPartial.delete();
+    }
+    record.hlsCompletedSegments = 0;
+    record.hlsTotalSegments = 0;
+    record.hlsCommittedBytes = 0;
+    record.hlsFingerprint = null;
+    record.totalBytes = null;
+    record.downloadedBytes = 0;
+    record.usedConnections = 1;
+    notifyListeners();
+    await _save();
+    final muxer = FfmpegMuxer(executable);
+    await muxer.remux(
+      source: source,
+      output: part,
+      onStart: (process) => _processes[record.id] = process,
+      isActive: () => record.status == DownloadStatus.downloading,
+    );
+    if (record.status != DownloadStatus.downloading) return;
+    await _finalizeFile(record, part);
   }
 
   Future<void> _finalizeFile(DownloadRecord record, File part) async {
@@ -566,8 +672,12 @@ class DownloadController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _scheduleTimer?.cancel();
     for (final client in _clients.values) {
       client.close(force: true);
+    }
+    for (final process in _processes.values) {
+      process.kill();
     }
     super.dispose();
   }

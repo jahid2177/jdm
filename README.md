@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 4**, a cross-platform HTTP(S)
+This repository contains **Milestone 5**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -71,12 +71,45 @@ desktop download managers. It does not contain Internet Download Manager code.
 - New automated fixture tests for HLS playlist parsing, download assembly,
   change recovery and clearly reported unsupported formats.
 
+## New in Milestone 5 — scheduling, quality selection, optional FFmpeg
+
+- Add a **Start now / choose schedule** control in the Windows and Android
+  dialog. Queued downloads wait until the selected local date and time, then
+  start when a slot is free. The scheduled time persists in local state.
+- **Scheduling runs only while JDM is running.** Launching the application
+  again restarts timers; the current version has no Windows background service
+  or Android WorkManager/background job.
+- Add **Highest / Balanced / Lowest** quality selection for HLS master
+  playlists. Variants are ranked by advertised bandwidth; this changes HLS
+  MPEG-TS selection. It is not a promise of a certain resolution or bitrate.
+- On Windows, **optionally** remux unencrypted DASH MPD and selected unsupported
+  HLS cases (fMP4 or separate-audio playlists) to MP4 using the user's own
+  installed FFmpeg binary. FFmpeg is not bundled, and not all source codecs
+  are compatible with MP4 stream-copying. Quality control for this FFmpeg
+  fallback is currently limited to FFmpeg's own stream selection.
+- A Windows session must define `JDM_FFMPEG_PATH` as the **full path** to an
+  installed `ffmpeg.exe`, then launch JDM from that environment. Example:
+
+  ```powershell
+  $env:JDM_FFMPEG_PATH = 'C:\Tools\ffmpeg\bin\ffmpeg.exe'
+  .\jahid_download_manager.exe
+  ```
+
+- MPD manifests declaring `ContentProtection` are rejected. FFmpeg's allowed
+  input protocols are restricted to `http,https,tcp,tls` (no `crypto` or local
+  file input). No cookies, credentials, DRM removal or live capture are added.
+- MP4 output is only marked **Completed** after a successful FFmpeg exit,
+  output file existence, minimum length and MP4 `ftyp` signature check.
+  Interrupted FFmpeg remux jobs restart from the beginning on retry.
+- On Android, there is **no FFmpeg integration** in this milestone; normal
+  downloads and the basic unencrypted MPEG-TS HLS path still work.
+
 **What it does not do:** This is not a universal streaming video ripper. It
-does not fetch DRM-protected media, browser cookies, `blob:`/`mediasource:`
-URLs, separate audio or fMP4 tracks. DASH/MPD URLs are detected but cannot
-yet be converted into playable video. Full remuxing requires a separately
-integrated, licensed media muxer such as FFmpeg. An HLS `.ts` file requires a
-player capable of reading MPEG Transport Streams.
+does not fetch DRM-protected media, private browser cookies,
+`blob:`/`mediasource:` URLs or arbitrary live streams. The optional Windows
+remuxer supports only sources that FFmpeg can stream-copy into MP4; encrypted
+and protected content remain unsupported. An HLS `.ts` file requires a player
+capable of reading MPEG Transport Streams.
 
 ### Browser extension setup on Windows
 
@@ -146,9 +179,9 @@ This is **not the full IDM-equivalent app**. The following are planned:
 - Android Downloads folder export through Storage Access Framework/MediaStore.
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
-- DASH audio/video download and muxing, HLS fMP4/separate audio, optional
-  appropriately licensed FFmpeg integration, advanced live capture.
-- Download queues, scheduler, speed limiter, site grabber, tray integration.
+- Android-compatible licensed media muxer and advanced live capture.
+- Scheduler execution while JDM is closed, speed limiter, site grabber,
+  persistent Windows background service and tray integration.
 - Native Windows installer, background Android service and notifications.
 - Per-server retry policies, checksums and advanced test coverage.
 
@@ -211,11 +244,15 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
 - `lib/integration/browser_bridge_server.dart` — authenticated loopback IPC.
 - `lib/video/video_source_detector.dart` — URL/MIME media classification.
 - `lib/video/hls_vod_downloader.dart` — conservative MPEG-TS HLS VOD downloader.
+- `lib/video/ffmpeg_muxer.dart` — optional Windows FFmpeg invocation and DASH
+  content-protection manifest check.
 - `native_messaging/` — Windows Native Messaging protocol and executable.
 - `browser_extensions/` — unpacked Chromium and Firefox add-ons.
 - `browser_integration/` — per-browser Windows registration scripts.
 - `test/browser_bridge_test.dart` — native protocol and loopback queue tests.
 - `test/video_download_test.dart` — local MPEG-TS HLS and DASH detection tests.
+- `test/scheduled_download_test.dart` — scheduler persistence, pause, and
+  deferred-start tests.
 - `test/download_controller_test.dart` — local HTTP fixture tests.
 - `.github/workflows/build.yml` — CI builds for both platforms.
 

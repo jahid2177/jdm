@@ -1,5 +1,6 @@
 enum DownloadStatus { queued, downloading, paused, completed, failed }
 enum DownloadKind { file, directVideo, hls, dash }
+enum VideoQuality { highest, balanced, lowest }
 
 class DownloadSegment {
   DownloadSegment({
@@ -47,6 +48,8 @@ class DownloadRecord {
     this.error,
     this.usedConnections = 1,
     this.kind = DownloadKind.file,
+    this.videoQuality = VideoQuality.highest,
+    this.scheduledAt,
     this.hlsCompletedSegments = 0,
     this.hlsTotalSegments = 0,
     this.hlsCommittedBytes = 0,
@@ -67,6 +70,8 @@ class DownloadRecord {
   String? error;
   int usedConnections;
   DownloadKind kind;
+  VideoQuality videoQuality;
+  DateTime? scheduledAt;
   int hlsCompletedSegments;
   int hlsTotalSegments;
   int hlsCommittedBytes;
@@ -97,6 +102,8 @@ class DownloadRecord {
         'error': error,
         'usedConnections': usedConnections,
         'kind': kind.name,
+        'videoQuality': videoQuality.name,
+        'scheduledAt': scheduledAt?.toIso8601String(),
         'hlsCompletedSegments': hlsCompletedSegments,
         'hlsTotalSegments': hlsTotalSegments,
         'hlsCommittedBytes': hlsCommittedBytes,
@@ -124,6 +131,13 @@ class DownloadRecord {
           (kind) => kind.name == json['kind'],
           orElse: () => DownloadKind.file,
         ),
+        videoQuality: VideoQuality.values.firstWhere(
+          (quality) => quality.name == json['videoQuality'],
+          orElse: () => VideoQuality.highest,
+        ),
+        scheduledAt: json['scheduledAt'] is String
+            ? DateTime.tryParse(json['scheduledAt'] as String)
+            : null,
         hlsCompletedSegments:
             (json['hlsCompletedSegments'] as num?)?.toInt() ?? 0,
         hlsTotalSegments: (json['hlsTotalSegments'] as num?)?.toInt() ?? 0,

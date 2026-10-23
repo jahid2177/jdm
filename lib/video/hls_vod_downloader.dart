@@ -23,7 +23,11 @@ class HlsVodDownloader {
   static const maximumPlaylistBytes = 1024 * 1024;
   static const maximumSegments = 10000;
 
-  static Future<HlsVodPlaylist> loadPlaylist(HttpClient client, Uri source) async {
+  static Future<HlsVodPlaylist> loadPlaylist(
+    HttpClient client,
+    Uri source, {
+    VideoQuality quality = VideoQuality.highest,
+  }) async {
     var uri = source;
     for (var depth = 0; depth < 3; depth++) {
       final document = await _fetchText(client, uri);
@@ -57,7 +61,12 @@ class HlsVodDownloader {
         }
         if (variants.isEmpty) throw const FormatException('No HLS video variant.');
         variants.sort((a, b) => b.$1.compareTo(a.$1));
-        uri = variants.first.$2;
+        final index = switch (quality) {
+          VideoQuality.highest => 0,
+          VideoQuality.balanced => variants.length ~/ 2,
+          VideoQuality.lowest => variants.length - 1,
+        };
+        uri = variants[index].$2;
         continue;
       }
 
@@ -155,7 +164,11 @@ class HlsVodDownloader {
     required Future<void> Function() persist,
     required void Function() onProgress,
   }) async {
-    final playlist = await loadPlaylist(client, Uri.parse(record.url));
+    final playlist = await loadPlaylist(
+      client,
+      Uri.parse(record.url),
+      quality: record.videoQuality,
+    );
     if (!isDownloading()) return;
 
     final changed = record.hlsFingerprint != playlist.fingerprint ||

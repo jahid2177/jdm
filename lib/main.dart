@@ -115,7 +115,12 @@ class _DownloadHomeState extends State<DownloadHome> {
     );
     if (input == null) return;
     try {
-      await widget.controller.addUrl(input.url, fileName: input.name);
+      await widget.controller.addUrl(
+        input.url,
+        fileName: input.name,
+        quality: input.quality,
+        scheduledAt: input.scheduledAt,
+      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -268,7 +273,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.4.0 • Md Jahidul Islam',
+              child: Text('JDM 0.5.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -430,6 +435,10 @@ class _DownloadHomeState extends State<DownloadHome> {
                       record.hlsTotalSegments > 0)
                     Text('${record.hlsCompletedSegments}/${record.hlsTotalSegments} video segments',
                         style: const TextStyle(fontSize: 11)),
+                  if (record.scheduledAt != null &&
+                      record.status == DownloadStatus.queued)
+                    Text('Scheduled: ${_whenString(record.scheduledAt!)}',
+                        style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
                     Text(record.error!, style: const TextStyle(color: Colors.red,
@@ -467,7 +476,11 @@ class _DownloadHomeState extends State<DownloadHome> {
 
   Widget _status(DownloadRecord record) {
     final (label, color) = switch (record.status) {
-      DownloadStatus.queued => ('Queued', Colors.orange),
+      DownloadStatus.queued => (
+        record.scheduledAt?.isAfter(DateTime.now()) == true
+            ? 'Scheduled' : 'Queued',
+        Colors.orange,
+      ),
       DownloadStatus.downloading => ('Downloading', Colors.blue),
       DownloadStatus.paused => ('Paused', Colors.grey),
       DownloadStatus.completed => ('Completed', Colors.green),
@@ -527,9 +540,18 @@ String _bytes(int? size) {
 }
 
 class _DownloadInput {
-  const _DownloadInput(this.url, this.name);
+  const _DownloadInput(this.url, this.name, this.quality, this.scheduledAt);
   final String url;
   final String name;
+  final VideoQuality quality;
+  final DateTime? scheduledAt;
+}
+
+String _whenString(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}';
 }
 
 class _AddDownloadDialog extends StatefulWidget {
@@ -543,6 +565,35 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
   final _form = GlobalKey<FormState>();
   final _url = TextEditingController();
   final _name = TextEditingController();
+  VideoQuality _quality = VideoQuality.highest;
+  DateTime? _scheduledAt;
+
+  Future<void> _pickSchedule() async {
+    final now = DateTime.now();
+    final day = await showDatePicker(
+      context: context,
+      initialDate: _scheduledAt ?? now,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (!mounted || day == null) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: _scheduledAt == null
+          ? TimeOfDay.fromDateTime(now.add(const Duration(minutes: 10)))
+          : TimeOfDay.fromDateTime(_scheduledAt!),
+    );
+    if (!mounted || time == null) return;
+    final selection = DateTime(day.year, day.month, day.day,
+        time.hour, time.minute);
+    if (!selection.isAfter(DateTime.now())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Choose a future download time.')),
+      );
+      return;
+    }
+    setState(() => _scheduledAt = selection);
+  }
 
   @override
   void dispose() {
@@ -556,7 +607,7 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
         title: const Text('Add download'),
         content: SizedBox(
           width: 450,
-          child: Form(
+          child: SingleChildScrollView(child: Form(
             key: _form,
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -585,9 +636,48 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                     prefixIcon: Icon(Icons.drive_file_rename_outline),
                   ),
                 ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<VideoQuality>(
+                  initialValue: _quality,
+                  decoration: const InputDecoration(
+                    labelText: 'HLS video quality',
+                    prefixIcon: Icon(Icons.high_quality_outlined),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: VideoQuality.highest,
+                        child: Text('Highest available')),
+                    DropdownMenuItem(value: VideoQuality.balanced,
+                        child: Text('Balanced / middle')),
+                    DropdownMenuItem(value: VideoQuality.lowest,
+                        child: Text('Lowest available')),
+                  ],
+                  onChanged: (quality) {
+                    if (quality != null) setState(() => _quality = quality);
+                  },
+                ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: _pickSchedule,
+                    icon: const Icon(Icons.schedule),
+                    label: Text(_scheduledAt == null
+                        ? 'Start now / choose schedule'
+                        : _whenString(_scheduledAt!)),
+                  )),
+                  if (_scheduledAt != null)
+                    IconButton(
+                      tooltip: 'Clear schedule',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _scheduledAt = null),
+                    ),
+                ]),
+                const SizedBox(height: 6),
+                const Text('Schedules run while JDM is open; closing the app '
+                    'does not start downloads in the background.',
+                    style: TextStyle(fontSize: 11)),
               ],
             ),
-          ),
+          )),
         ),
         actions: [
           TextButton(
@@ -597,11 +687,12 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
           FilledButton.icon(
             onPressed: () {
               if (_form.currentState!.validate()) {
-                Navigator.pop(context, _DownloadInput(_url.text, _name.text));
+                Navigator.pop(context, _DownloadInput(
+                  _url.text, _name.text, _quality, _scheduledAt));
               }
             },
             icon: const Icon(Icons.download),
-            label: const Text('Start'),
+            label: Text(_scheduledAt == null ? 'Start' : 'Schedule'),
           ),
         ],
       );

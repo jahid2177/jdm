@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jahid_download_manager/download/download_controller.dart';
 import 'package:jahid_download_manager/download/download_record.dart';
 import 'package:jahid_download_manager/video/hls_vod_downloader.dart';
+import 'package:jahid_download_manager/video/ffmpeg_muxer.dart';
 import 'package:jahid_download_manager/video/video_source_detector.dart';
 
 void main() {
@@ -156,6 +157,34 @@ second.ts
     expect(await File(task.savePath).readAsBytes(), [...first, ...second]);
   });
 
+  test('selects the lowest bandwidth HLS variant on request', () async {
+    final task = await controller.addUrl(
+      link('/master.m3u8'),
+      quality: VideoQuality.lowest,
+    );
+    await controller.waitForIdle();
+    expect(task.status, DownloadStatus.completed);
+    expect(task.videoQuality, VideoQuality.lowest);
+    expect(task.hlsTotalSegments, 1);
+    expect(await File(task.savePath).readAsBytes(), first);
+    expect(DownloadRecord.fromJson(task.toJson()).videoQuality,
+        VideoQuality.lowest);
+  });
+
+  test('balanced quality picks middle position of sorted variants', () async {
+    final client = HttpClient();
+    try {
+      final playlist = await HlsVodDownloader.loadPlaylist(
+        client,
+        Uri.parse(link('/master.m3u8')),
+        quality: VideoQuality.balanced,
+      );
+      expect(playlist.segments.length, 1);
+    } finally {
+      client.close(force: true);
+    }
+  });
+
   test('detects HLS even at an extensionless URL via response MIME', () async {
     final task = await controller.addUrl(link('/stream'), fileName: 'clip');
     await controller.waitForIdle();
@@ -165,7 +194,7 @@ second.ts
     expect(await File(task.savePath).readAsBytes(), [...first, ...second]);
   });
 
-  test('encrypted, live and fragmented playlists are rejected clearly', () async {
+  test('unsupported HLS formats fail explicitly with no FFmpeg configured', () async {
     for (final path in [
       '/encrypted.m3u8', '/live.m3u8', '/mp4.m3u8',
       '/separate-audio.m3u8',
@@ -173,7 +202,11 @@ second.ts
       final task = await controller.addUrl(link(path));
       await controller.waitForIdle();
       expect(task.status, DownloadStatus.failed, reason: path);
-      expect(task.error, contains('HLS not supported'));
+      if (path == '/mp4.m3u8' || path == '/separate-audio.m3u8') {
+        expect(task.error, contains('FFmpeg'), reason: path);
+      } else {
+        expect(task.error, contains('HLS not supported'), reason: path);
+      }
     }
   });
 
@@ -183,6 +216,20 @@ second.ts
     expect(task.kind, DownloadKind.dash);
     expect(task.status, DownloadStatus.failed);
     expect(task.error, contains('DASH/MPD'));
+  });
+
+  test('FFmpeg arguments use safe protocol whitelist and no shell', () {
+    final args = FfmpegMuxer.arguments(
+      Uri.parse('https://example.com/video.mpd'),
+      '/tmp/output.jdm-part',
+    );
+    expect(args, containsAllInOrder([
+      '-protocol_whitelist', 'http,https,tcp,tls',
+    ]));
+    expect(args, containsAllInOrder(['-map', '0:v:0', '-map', '0:a:0?']));
+    expect(args.last, '/tmp/output.jdm-part');
+    expect(() => FfmpegMuxer.arguments(Uri.parse('file:///secret'), 'x'),
+        throwsFormatException);
   });
 
   test('resuming from a changed playlist discards obsolete committed bytes', () async {
