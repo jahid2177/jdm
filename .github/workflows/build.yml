@@ -25,9 +25,11 @@ jobs:
       - name: Generate Android platform scaffold
         run: flutter create --platforms=android --org com.jahidul .
       - run: flutter pub get
-      - run: dart format lib test
+      - run: dart format lib test native_messaging
       - run: flutter analyze
       - run: flutter test
+      - name: Test browser extension message handling
+        run: node test/browser_extension_test.js
       - name: Build Android APK
         run: flutter build apk --release --target-platform android-arm64
       - name: Upload Android APK
@@ -48,11 +50,20 @@ jobs:
       - name: Generate Windows platform scaffold
         run: flutter create --platforms=windows --org com.jahidul .
       - run: flutter pub get
-      - run: dart format lib test
+      - run: dart format lib test native_messaging
       - run: flutter analyze
       - run: flutter test
+      - name: Test browser extension message handling
+        run: node test/browser_extension_test.js
       - name: Build Windows x64
         run: flutter build windows --release
+      - name: Compile Dart native messaging host
+        run: dart compile exe native_messaging/bin/jdm_native_host.dart -o build/windows/x64/runner/Release/jdm_native_host.exe
+      - name: Include extension and Windows registration scripts
+        shell: pwsh
+        run: |
+          Copy-Item -Path 'browser_extensions' -Destination 'build/windows/x64/runner/Release/browser_extensions' -Recurse
+          Copy-Item -Path 'browser_integration' -Destination 'build/windows/x64/runner/Release/browser_integration' -Recurse
       - name: Package Windows release directory
         shell: pwsh
         run: Compress-Archive -Path 'build/windows/x64/runner/Release/*' -DestinationPath 'JDM-Windows-x64.zip' -Force
