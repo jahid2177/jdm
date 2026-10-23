@@ -24,6 +24,7 @@ RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: "browserintegration"; Description: "Open guided Chrome / Edge integration setup after installation"
 
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -31,9 +32,30 @@ Source: "BROWSER_SETUP.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Jahid Download Manager"; Filename: "{app}\jahid_download_manager.exe"
+Name: "{group}\Set up Chrome and Edge integration"; Filename: "{app}\jahid_download_manager.exe"; Parameters: "--browser-setup"
 Name: "{autodesktop}\Jahid Download Manager"; Filename: "{app}\jahid_download_manager.exe"; Tasks: desktopicon
 Name: "{group}\Browser integration setup"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\BROWSER_SETUP.txt"""
 
 [Run]
-Filename: "{app}\jahid_download_manager.exe"; Description: "Launch Jahid Download Manager"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\jahid_download_manager.exe"; Parameters: "{code:BrowserSetupArgs}"; Description: "Launch Jahid Download Manager"; Flags: nowait postinstall skipifsilent
 Filename: "{sys}\notepad.exe"; Parameters: """{app}\BROWSER_SETUP.txt"""; Description: "Read browser integration setup guide"; Flags: nowait postinstall skipifsilent unchecked
+
+[Code]
+function BrowserSetupArgs(Param: String): String;
+begin
+  if WizardIsTaskSelected('browserintegration') then
+    Result := '--browser-setup'
+  else
+    Result := '';
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Google\Chrome\NativeMessagingHosts\com.jahidul.jdm');
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Microsoft\Edge\NativeMessagingHosts\com.jahidul.jdm');
+    DeleteFile(ExpandConstant('{localappdata}\JahidDownloadManager\NativeMessaging\chrome-host.json'));
+    DeleteFile(ExpandConstant('{localappdata}\JahidDownloadManager\NativeMessaging\edge-host.json'));
+  end;
+end;

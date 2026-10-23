@@ -16,9 +16,10 @@ import 'integration/browser_bridge_server.dart';
 import 'integration/completed_file_actions.dart';
 import 'integration/clipboard_link_detector.dart';
 import 'integration/download_alert_tracker.dart';
+import 'integration/windows_browser_setup_dialog.dart';
 import 'integration/windows_tray_controller.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   final controller = await DownloadController.create();
   BrowserBridgeServer? bridge;
@@ -43,6 +44,8 @@ Future<void> main() async {
     tray: tray,
     background: background,
     completion: completion,
+    openBrowserSetupOnLaunch:
+        Platform.isWindows && args.contains('--browser-setup'),
   ));
 }
 
@@ -54,12 +57,14 @@ class JdmApp extends StatefulWidget {
     this.tray,
     this.background,
     this.completion,
+    this.openBrowserSetupOnLaunch = false,
   });
   final DownloadController controller;
   final BrowserBridgeServer? bridge;
   final WindowsTrayController? tray;
   final AndroidBackgroundKeeper? background;
   final AndroidCompletionCoordinator? completion;
+  final bool openBrowserSetupOnLaunch;
 
   @override
   State<JdmApp> createState() => _JdmAppState();
@@ -118,6 +123,7 @@ class _JdmAppState extends State<JdmApp> {
           background: widget.background,
           completion: widget.completion,
           onToggleTheme: () => unawaited(_cycleTheme()),
+          openBrowserSetupOnLaunch: widget.openBrowserSetupOnLaunch,
         ),
       );
 }
@@ -154,11 +160,13 @@ class DownloadHome extends StatefulWidget {
     required this.onToggleTheme,
     this.background,
     this.completion,
+    this.openBrowserSetupOnLaunch = false,
   });
   final DownloadController controller;
   final VoidCallback onToggleTheme;
   final AndroidBackgroundKeeper? background;
   final AndroidCompletionCoordinator? completion;
+  final bool openBrowserSetupOnLaunch;
 
   @override
   State<DownloadHome> createState() => _DownloadHomeState();
@@ -189,7 +197,24 @@ class _DownloadHomeState extends State<DownloadHome>
           unawaited(_inspectClipboard());
         }
       });
+      if (widget.openBrowserSetupOnLaunch) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            unawaited(_browserSetup());
+          }
+        });
+      }
     }
+  }
+
+  Future<void> _browserSetup() async {
+    if (!Platform.isWindows || !mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const WindowsBrowserSetupDialog(),
+    );
   }
 
   @override
@@ -911,6 +936,12 @@ class _DownloadHomeState extends State<DownloadHome>
             ],
           ),
           actions: [
+            if (Platform.isWindows)
+              IconButton(
+                tooltip: 'Set up Chrome and Edge browser integration',
+                icon: const Icon(Icons.extension_outlined),
+                onPressed: _browserSetup,
+              ),
             if (Platform.isWindows)
               IconButton(
                 tooltip: 'Review clipboard link (does not auto-download)',

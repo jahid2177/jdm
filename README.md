@@ -516,58 +516,53 @@ built through GitHub Actions; this source archive does not contain binaries.
 
 ### Browser extension setup on Windows
 
-1. Download the **JDM-Windows-x64** GitHub Actions artifact and extract it
-   completely to a **permanent folder**. Keep all the DLLs and data files
-   alongside `jahid_download_manager.exe`. The build ZIP also contains
-   `jdm_native_host.exe`, `browser_extensions` and `browser_integration`.
-2. **Chrome:** open `chrome://extensions`, turn on **Developer mode**, select
-   **Load unpacked**, choose `browser_extensions/chromium` inside the extracted
-   JDM folder, and copy the actual 32-letter extension ID shown by Chrome.
-3. **Edge:** open `edge://extensions`, enable Developer mode, use **Load
-   unpacked** for that same `browser_extensions/chromium` folder and copy the
-   **Edge extension ID** (it can differ from Chrome's ID).
-4. Open **PowerShell** in the extracted JDM folder. For each installed browser,
-   run the relevant registration command below with its real extension ID:
+1. Download the **JDM-Windows-Installer-x64** GitHub Actions artifact and run
+   the installer. Leave **Open guided Chrome / Edge integration setup after
+   installation** selected. JDM opens its Browser Integration Setup screen on
+   first launch, and its Windows toolbar has an extension icon to reopen it.
+2. In the JDM wizard click **Copy extension folder** and **Open Google Chrome
+   extensions** or **Open Microsoft Edge extensions**. Enable Developer mode
+   in the browser, choose **Load unpacked**, and select the copied folder.
+   Browser-side approval cannot be silently performed by the installer.
+3. Return to JDM and click **Detect and connect automatically** for the
+   selected browser. JDM verifies the extension's path in local browser
+   profiles, then registers its Native Messaging host for the Windows user.
+   **No PowerShell command is necessary.** If the ID is not yet detected,
+   copy the real 32-letter ID from the browser, paste into JDM, and select
+   **Connect using ID** instead.
+4. Restart the browser and keep JDM running. Use **Download link with JDM**
+   on a direct HTTP(S) link, or use the extension's toolbar command.
 
-   ```powershell
-   & .\browser_integration\install_windows.ps1 -Browser Chrome -ExtensionId 'PASTE_REAL_CHROME_ID'
-   & .\browser_integration\install_windows.ps1 -Browser Edge -ExtensionId 'PASTE_REAL_EDGE_ID'
-   ```
+For the **portable Windows ZIP**, extract the entire `JDM-Windows-x64`
+artifact to a permanent folder before opening `jahid_download_manager.exe`.
+Keep its DLLs, data files, `jdm_native_host.exe` and `browser_extensions`
+together. Open the setup wizard using JDM's toolbar extension icon. The old
+PowerShell registration script remains as an advanced fallback.
 
-5. **Firefox (development):** in `about:debugging#/runtime/this-firefox`,
-   choose **Load Temporary Add-on** and select
-   `browser_extensions/firefox/manifest.json`. Then register its native host:
+**Firefox (development):** in `about:debugging#/runtime/this-firefox`,
+choose **Load Temporary Add-on** and select
+`browser_extensions/firefox/manifest.json`. Firefox Native Messaging still
+uses the existing optional script:
 
-   ```powershell
-   & .\browser_integration\install_windows.ps1 -Browser Firefox
-   ```
+```powershell
+& .\browser_integration\install_windows.ps1 -Browser Firefox
+```
 
-   A temporary Firefox add-on disappears when Firefox restarts. To distribute
-   it permanently, the extension must be packaged and signed according to
-   Mozilla's add-on policies.
+A temporary Firefox add-on disappears when Firefox restarts. A permanently
+installed extension requires packaging and signing under Mozilla's policies.
+The wizard cannot bypass browser or organization policies. Automatic detection
+accepts only IDs whose profile path matches JDM's extension directory.
 
-6. Start `jahid_download_manager.exe` **before** sending any links. Restart
-   the browsers after registering the native host. Right-click a direct file
-   link and choose **Download link with JDM**, or use the toolbar form. JDM
-   should add that HTTP(S) URL to its list and show progress. You can also
-   right-click a video element and use **Download video with JDM** if the
-   browser exposes its direct HTTP(S) source link.
-
-Windows may block unsigned PowerShell scripts depending on local execution
-policy. Respect your organization's security policy; a signed installer is a
-future enhancement. Never use made-up extension IDs: each browser's real ID
-must be explicitly registered.
-
-To remove the JDM native host registration for a browser, run:
+To remove a manually registered JDM native host, run:
 
 ```powershell
 & .\browser_integration\uninstall_windows.ps1 -Browser Chrome
 ```
 
-Change `Chrome` to `Edge` or `Firefox` for that browser. This unregisters only
-JDM's per-user native host and its related manifest; it does not erase saved
-downloads or uninstall the browser extension. Moving the extracted release
-folder after registration requires running the install script again.
+Change `Chrome` to `Edge` or `Firefox` for that browser. The Windows installer
+also removes Chrome/Edge Native Messaging registration on uninstall. Neither
+operation deletes downloaded files or separately loaded browser extensions.
+If you move a portable release folder, run JDM's setup wizard again.
 
 **Scope:** Browsers send a URL selected by the user. They do not extract
 private-site sessions or inspect network streams. Direct video files and the
