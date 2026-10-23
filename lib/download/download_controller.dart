@@ -1112,12 +1112,15 @@ class DownloadController extends ChangeNotifier {
       _processes.remove(record.id);
       _activeIds.remove(record.id);
       notifyListeners();
+      // Claim the newly freed slot synchronously. Otherwise waitForIdle()
+      // can observe zero active downloads while a queued task is still
+      // waiting for this final state write to finish.
+      _pump();
       try {
         await _save();
       } catch (error) {
         debugPrint('Could not save download state: $error');
       }
-      _pump();
     }
   }
 

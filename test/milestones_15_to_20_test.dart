@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -36,17 +37,22 @@ void main() {
     late DownloadController controller;
     late HttpServer server;
     late DateTime clock;
+    Completer<void>? holdSlowResponse;
     var requests = 0;
 
     setUp(() async {
       temp = await Directory.systemTemp.createTemp('jdm-automation-');
       clock = DateTime(2026, 10, 23, 23);
+      holdSlowResponse = null;
       requests = 0;
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) async {
         requests++;
         if (request.uri.path.contains('slow')) {
-          await Future<void>.delayed(const Duration(milliseconds: 300));
+          final gate = holdSlowResponse;
+          if (gate != null) {
+            await gate.future;
+          }
         }
         request.response.headers.contentLength = 4;
         request.response.add([1, 2, 3, 4]);
@@ -142,11 +148,19 @@ void main() {
       clock = DateTime(2026, 10, 23, 12);
       await controller.setMaximumActiveDownloads(3);
       await controller.setMaximumActivePerHost(1);
-      final first = await controller.addUrl(url('slow-first.zip'));
-      final second = await controller.addUrl(url('slow-second.zip'));
-      await Future<void>.delayed(const Duration(milliseconds: 80));
-      expect(first.status, DownloadStatus.downloading);
-      expect(second.status, DownloadStatus.queued);
+      final gate = Completer<void>();
+      holdSlowResponse = gate;
+      late DownloadRecord first;
+      late DownloadRecord second;
+      try {
+        first = await controller.addUrl(url('slow-first.zip'));
+        second = await controller.addUrl(url('slow-second.zip'));
+        expect(first.status, DownloadStatus.downloading);
+        expect(second.status, DownloadStatus.queued);
+        expect(controller.activeCount, 1);
+      } finally {
+        gate.complete();
+      }
       await controller.waitForIdle();
       expect(first.status, DownloadStatus.completed);
       expect(second.status, DownloadStatus.completed);
