@@ -154,6 +154,8 @@ class _DownloadHomeState extends State<DownloadHome> {
   Future<void> _handle(DownloadRecord record, String action) async {
     if (action == 'pause') await widget.controller.pause(record.id);
     if (action == 'resume') await widget.controller.resume(record.id);
+    if (action == 'earlier') await widget.controller.moveEarlier(record.id);
+    if (action == 'later') await widget.controller.moveLater(record.id);
     if (action == 'remove') await _remove(record);
     if (action == 'path' && mounted) {
       await showDialog<void>(
@@ -172,6 +174,25 @@ class _DownloadHomeState extends State<DownloadHome> {
     }
   }
 
+  Future<void> _queueAction(String action) async {
+    if (action == 'pauseQueue') {
+      await widget.controller.setQueuePaused(true);
+    } else if (action == 'resumeQueue') {
+      await widget.controller.setQueuePaused(false);
+    } else if (action == 'pauseAll') {
+      await widget.controller.pauseAll();
+    } else if (action == 'resumeAll') {
+      await widget.controller.resumeAll();
+    }
+  }
+
+  Future<void> _settings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _QueueSettingsDialog(controller: widget.controller),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
@@ -184,6 +205,28 @@ class _DownloadHomeState extends State<DownloadHome> {
             ],
           ),
           actions: [
+            PopupMenuButton<String>(
+              tooltip: 'Queue actions',
+              icon: const Icon(Icons.playlist_play),
+              onSelected: _queueAction,
+              itemBuilder: (_) => [
+                if (!widget.controller.queuePaused)
+                  const PopupMenuItem(value: 'pauseQueue',
+                      child: Text('Hold queued downloads'))
+                else
+                  const PopupMenuItem(value: 'resumeQueue',
+                      child: Text('Start queued downloads')),
+                const PopupMenuItem(value: 'pauseAll',
+                    child: Text('Pause all downloads')),
+                const PopupMenuItem(value: 'resumeAll',
+                    child: Text('Resume all paused')),
+              ],
+            ),
+            IconButton(
+              tooltip: 'Speed and queue settings',
+              icon: const Icon(Icons.tune),
+              onPressed: _settings,
+            ),
             IconButton(
               tooltip: 'Change theme',
               icon: const Icon(Icons.brightness_6_outlined),
@@ -273,7 +316,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.5.0 • Md Jahidul Islam',
+              child: Text('JDM 0.6.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -486,9 +529,12 @@ class _DownloadHomeState extends State<DownloadHome> {
       DownloadStatus.completed => ('Completed', Colors.green),
       DownloadStatus.failed => ('Failed', Colors.red),
     };
+    final priority = widget.controller.queuedInPriorityOrder
+        .indexWhere((queued) => queued.id == record.id);
+    final displayedLabel = priority >= 0 ? '$label #${priority + 1}' : label;
     return Tooltip(
       message: record.error ?? label,
-      child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600,
+      child: Text(displayedLabel, style: TextStyle(color: color, fontWeight: FontWeight.w600,
           fontSize: 12)),
     );
   }
@@ -503,6 +549,10 @@ class _DownloadHomeState extends State<DownloadHome> {
               record.status == DownloadStatus.failed ||
               record.status == DownloadStatus.queued)
             const PopupMenuItem(value: 'resume', child: Text('Resume / Retry')),
+          if (record.status == DownloadStatus.queued) ...[
+            const PopupMenuItem(value: 'earlier', child: Text('Move earlier in queue')),
+            const PopupMenuItem(value: 'later', child: Text('Move later in queue')),
+          ],
           const PopupMenuItem(value: 'path', child: Text('Show file path')),
           const PopupMenuItem(value: 'remove', child: Text('Remove from list')),
         ],
@@ -514,9 +564,85 @@ class _DownloadHomeState extends State<DownloadHome> {
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         child: Text('${all.length} total downloads • '
             '${widget.controller.activeCount} active • '
+            '${widget.controller.queuePaused ? 'Queue held' : 'Queue running'} • '
+            'Speed limit: ${widget.controller.speedLimitKibPerSecond == 0 ? 'Unlimited' : '${widget.controller.speedLimitKibPerSecond} KiB/s'} • '
             'Save folder: ${widget.controller.downloadDirectory.path}',
             maxLines: 1, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 11)),
+      );
+}
+
+class _QueueSettingsDialog extends StatefulWidget {
+  const _QueueSettingsDialog({required this.controller});
+
+  final DownloadController controller;
+
+  @override
+  State<_QueueSettingsDialog> createState() => _QueueSettingsDialogState();
+}
+
+class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
+  late int _limit;
+  late int _concurrent;
+
+  @override
+  void initState() {
+    super.initState();
+    _limit = widget.controller.speedLimitKibPerSecond;
+    _concurrent = widget.controller.maxSimultaneous;
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Speed and queue settings'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Total download speed limit'),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<int>(
+                initialValue: _limit,
+                isExpanded: true,
+                items: const [0, 64, 128, 256, 512, 1024, 2048, 5120, 10240]
+                    .map((limit) => DropdownMenuItem(
+                          value: limit,
+                          child: Text(limit == 0 ? 'Unlimited' : '$limit KiB/s'),
+                        ))
+                    .toList(),
+                onChanged: (value) async {
+                  if (value == null) return;
+                  setState(() => _limit = value);
+                  await widget.controller.setSpeedLimitKibPerSecond(value);
+                },
+              ),
+              const SizedBox(height: 22),
+              Text('Simultaneous downloads: $_concurrent'),
+              Slider(
+                min: 1,
+                max: 5,
+                divisions: 4,
+                value: _concurrent.toDouble(),
+                label: '$_concurrent',
+                onChanged: (value) => setState(() => _concurrent = value.round()),
+                onChangeEnd: (value) =>
+                    widget.controller.setMaximumActiveDownloads(value.round()),
+              ),
+              const Text('Speed limits apply to built-in HTTP and HLS '
+                  'downloads, including segmented connections. External '
+                  'FFmpeg transfers are not throttled.',
+                  style: TextStyle(fontSize: 12)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
       );
 }
 

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'download_record.dart';
+import 'download_rate_limiter.dart';
 
 class RangeProbe {
   const RangeProbe(this.totalBytes, this.etag, this.lastModified,
@@ -104,6 +105,7 @@ class SegmentedDownloader {
     required HttpClient client,
     required bool Function() isDownloading,
     required void Function() onProgress,
+    DownloadRateLimiter? rateLimiter,
   }) async {
     if (record.totalBytes == null || record.segments.isEmpty) {
       throw StateError('No segment plan to execute.');
@@ -115,6 +117,7 @@ class SegmentedDownloader {
           client: client,
           isDownloading: isDownloading,
           onProgress: onProgress,
+          rateLimiter: rateLimiter,
         )));
   }
 
@@ -124,6 +127,7 @@ class SegmentedDownloader {
     required HttpClient client,
     required bool Function() isDownloading,
     required void Function() onProgress,
+    DownloadRateLimiter? rateLimiter,
   }) async {
     if (!isDownloading() || segment.complete) return;
     final file = segmentFile(record, segment);
@@ -163,6 +167,10 @@ class SegmentedDownloader {
     final writer = await file.open(mode: FileMode.append);
     try {
       await for (final bytes in response) {
+        if (!isDownloading()) break;
+        if (rateLimiter != null) {
+          await rateLimiter.acquire(bytes.length, isActive: isDownloading);
+        }
         if (!isDownloading()) break;
         if (segment.downloadedBytes + bytes.length > segment.length) {
           throw StateError('Received bytes outside segment ${segment.index}.');

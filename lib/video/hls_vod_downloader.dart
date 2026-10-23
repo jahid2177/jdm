@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../download/download_record.dart';
+import '../download/download_rate_limiter.dart';
 
 class UnsupportedHlsException implements Exception {
   const UnsupportedHlsException(this.reason);
@@ -163,6 +164,7 @@ class HlsVodDownloader {
     required bool Function() isDownloading,
     required Future<void> Function() persist,
     required void Function() onProgress,
+    DownloadRateLimiter? rateLimiter,
   }) async {
     final playlist = await loadPlaylist(
       client,
@@ -220,6 +222,10 @@ class HlsVodDownloader {
         }
         var segmentBytes = 0;
         await for (final bytes in response) {
+          if (!isDownloading()) return;
+          if (rateLimiter != null) {
+            await rateLimiter.acquire(bytes.length, isActive: isDownloading);
+          }
           if (!isDownloading()) return;
           if (segmentBytes == 0 && bytes.isNotEmpty && bytes.first != 0x47) {
             throw const UnsupportedHlsException('segment is not MPEG transport stream');

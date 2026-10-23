@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'download_record.dart';
+import 'download_rate_limiter.dart';
 import 'segmented_downloader.dart';
 import '../video/hls_vod_downloader.dart';
 import '../video/ffmpeg_muxer.dart';
@@ -62,21 +63,34 @@ class DownloadController extends ChangeNotifier {
   final Map<String, HttpClient> _clients = {};
   final Map<String, Process> _processes = {};
   final Set<String> _activeIds = {};
+  final DownloadRateLimiter _rateLimiter = DownloadRateLimiter();
   Timer? _scheduleTimer;
   Future<void> _pendingSave = Future.value();
+  Future<void> _pendingSettingsSave = Future.value();
   Future<void> _finalizeBarrier = Future.value();
   int _sequence = 0;
   int maxSimultaneous = 3;
+  bool _queuePaused = false;
 
   List<DownloadRecord> get downloads => List.unmodifiable(_records);
   int get activeCount => _activeIds.length;
+  bool get queuePaused => _queuePaused;
+  int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
+
+  List<DownloadRecord> get queuedInPriorityOrder => List.unmodifiable(
+        _records.reversed.where((r) => r.status == DownloadStatus.queued),
+      );
 
   File get _stateFile =>
       File('${_stateDirectory.path}${Platform.pathSeparator}downloads.json');
 
+  File get _settingsFile =>
+      File('${_stateDirectory.path}${Platform.pathSeparator}settings.json');
+
   Future<void> initialize() async {
     await _stateDirectory.create(recursive: true);
     await downloadDirectory.create(recursive: true);
+    await _loadSettings();
     for (final file in [_stateFile, File('${_stateFile.path}.bak')]) {
       if (!await file.exists()) continue;
       try {
@@ -168,6 +182,121 @@ class DownloadController extends ChangeNotifier {
     return record;
   }
 
+  Future<void> setSpeedLimitKibPerSecond(int limit) async {
+    if (limit < 0 || limit > 10240) {
+      throw RangeError.range(limit, 0, 10240, 'limit');
+    }
+    _rateLimiter.setBytesPerSecond(limit * 1024);
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setMaximumActiveDownloads(int value) async {
+    if (value < 1 || value > 5) throw RangeError.range(value, 1, 5);
+    maxSimultaneous = value;
+    notifyListeners();
+    await _saveSettings();
+    _pump();
+  }
+
+  Future<void> setQueuePaused(bool paused) async {
+    _queuePaused = paused;
+    notifyListeners();
+    await _saveSettings();
+    _pump();
+  }
+
+  Future<void> pauseAll() async {
+    _queuePaused = true;
+    for (final record in _records) {
+      if (record.status != DownloadStatus.downloading &&
+          record.status != DownloadStatus.queued) continue;
+      record.status = DownloadStatus.paused;
+      _clients[record.id]?.close(force: true);
+      _processes[record.id]?.kill();
+    }
+    notifyListeners();
+    await _saveSettings();
+    await _save();
+    _pump();
+  }
+
+  Future<void> resumeAll() async {
+    // Let cancelled writers/processes unwind before re-queueing those tasks.
+    while (_activeIds.isNotEmpty) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    // A future schedule is retained; pressing Resume on one item overrides it.
+    _queuePaused = false;
+    for (final record in _records) {
+      if (record.status == DownloadStatus.paused) {
+        record.status = DownloadStatus.queued;
+        record.error = null;
+      }
+    }
+    notifyListeners();
+    await _saveSettings();
+    await _save();
+    _pump();
+  }
+
+  Future<bool> moveEarlier(String id) => _reorderQueued(id, towardFront: true);
+
+  Future<bool> moveLater(String id) => _reorderQueued(id, towardFront: false);
+
+  Future<bool> _reorderQueued(String id, {required bool towardFront}) async {
+    final position = _records.indexWhere((record) => record.id == id &&
+        record.status == DownloadStatus.queued);
+    if (position < 0) return false;
+    // The stored list has newest first; _pump processes its reverse.
+    final step = towardFront ? 1 : -1;
+    var cursor = position + step;
+    while (cursor >= 0 && cursor < _records.length) {
+      if (_records[cursor].status == DownloadStatus.queued) {
+        final record = _records[position];
+        _records[position] = _records[cursor];
+        _records[cursor] = record;
+        notifyListeners();
+        await _save();
+        return true;
+      }
+      cursor += step;
+    }
+    return false;
+  }
+
+  Future<void> _loadSettings() async {
+    if (!await _settingsFile.exists()) return;
+    try {
+      final raw = jsonDecode(await _settingsFile.readAsString());
+      if (raw is! Map) return;
+      final settings = Map<String, dynamic>.from(raw);
+      final speed = (settings['speedLimitKibPerSecond'] as num?)?.toInt() ?? 0;
+      _rateLimiter.setBytesPerSecond(speed.clamp(0, 10240).toInt() * 1024);
+      maxSimultaneous = ((settings['maxSimultaneous'] as num?)?.toInt() ?? 3)
+          .clamp(1, 5).toInt();
+      _queuePaused = settings['queuePaused'] == true;
+    } catch (_) {
+      // If settings are corrupt, retain safe defaults without losing tasks.
+    }
+  }
+
+  Future<void> _saveSettings() {
+    final json = jsonEncode({
+      'speedLimitKibPerSecond': speedLimitKibPerSecond,
+      'maxSimultaneous': maxSimultaneous,
+      'queuePaused': _queuePaused,
+    });
+    _pendingSettingsSave = _pendingSettingsSave.catchError((Object _) {})
+        .then((_) async {
+      final temp = File('${_settingsFile.path}.tmp');
+      await temp.writeAsString(json, flush: true);
+      if (await _settingsFile.exists()) await _settingsFile.delete();
+      await temp.rename(_settingsFile.path);
+    });
+    return _pendingSettingsSave;
+  }
+
   File _partialFile(DownloadRecord record) =>
       File('${record.savePath}.${record.id}.jdm-part');
 
@@ -233,7 +362,7 @@ class DownloadController extends ChangeNotifier {
         if (nextDue == null || due.isBefore(nextDue)) nextDue = due;
         continue;
       }
-      if (_activeIds.length >= maxSimultaneous) continue;
+      if (_queuePaused || _activeIds.length >= maxSimultaneous) continue;
       _activeIds.add(record.id);
       unawaited(_run(record));
     }
@@ -353,6 +482,7 @@ class DownloadController extends ChangeNotifier {
           record: record,
           client: client,
           isDownloading: () => record.status == DownloadStatus.downloading,
+          rateLimiter: _rateLimiter,
           onProgress: () {
             final now = clock.elapsedMilliseconds;
             if (now - lastMillis < 500) return;
@@ -479,6 +609,11 @@ class DownloadController extends ChangeNotifier {
     try {
       await for (final bytes in response) {
         if (record.status != DownloadStatus.downloading) break;
+        await _rateLimiter.acquire(
+          bytes.length,
+          isActive: () => record.status == DownloadStatus.downloading,
+        );
+        if (record.status != DownloadStatus.downloading) break;
         await writer.writeFrom(bytes);
         record.downloadedBytes += bytes.length;
         final now = DateTime.now();
@@ -533,6 +668,7 @@ class DownloadController extends ChangeNotifier {
         partialFile: partialFile,
         isDownloading: () => record.status == DownloadStatus.downloading,
         persist: _save,
+        rateLimiter: _rateLimiter,
         onProgress: () {
           if (record.downloadedBytes < lastBytes) {
             lastBytes = record.downloadedBytes;

@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 5**, a cross-platform HTTP(S)
+This repository contains **Milestone 6**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -111,6 +111,37 @@ remuxer supports only sources that FFmpeg can stream-copy into MP4; encrypted
 and protected content remain unsupported. An HLS `.ts` file requires a player
 capable of reading MPEG Transport Streams.
 
+## New in Milestone 6 — queue controls and download speed limiting
+
+- Open **Speed and queue settings** from the top-bar tuning icon on Windows
+  and Android. Choose one global cap: Unlimited, 64, 128, 256, 512, 1024,
+  2048, 5120 or 10240 **KiB/s**. The limit applies across all built-in
+  HTTP(S) downloads and MPEG-TS HLS segment workers **combined**.
+- The shared token bucket sits ahead of disk writes; it also covers multi-
+  connection segmented downloads. Its per-second burst capacity means
+  instantaneous transfer rates can exceed the long-term configured average.
+- FFmpeg runs externally and **does not obey this limiter**. Neither do browser
+  downloads happening outside JDM.
+- Set **1–5 simultaneous downloads**. Lowering the value affects new starts;
+  already-active tasks are allowed to finish or be paused manually.
+- Top-bar **Queue actions** provides **Hold queued downloads**, **Start queued
+  downloads**, **Pause all downloads** and **Resume all paused**.
+- Every queued item has **Move earlier in queue** and **Move later in queue**
+  actions; the queue-position badge shows the current priority. Earlier items
+  start before later ones when capacity becomes available.
+- Queue hold state, parallel-task limit and speed cap persist to local
+  application support storage. Existing file and scheduled-download state is
+  kept separately from these settings.
+- Manual **Resume all** keeps future schedules intact. Manual **Resume / Retry**
+  on an individual download overrides that particular task's schedule.
+- Added fixture tests for queue holding/reordering, Pause All/Resume All,
+  persisted settings, and actual token-bucket throttling.
+
+**Still pending:** Windows system-tray/minimize support and reliable Android
+background downloading/notifications require native lifecycle integration.
+Keeping JDM open is still required for this milestone's scheduler and active
+downloads. Do not rely on it for downloads after Android terminates the app.
+
 ### Browser extension setup on Windows
 
 1. Download the **JDM-Windows-x64** GitHub Actions artifact and extract it
@@ -180,7 +211,7 @@ This is **not the full IDM-equivalent app**. The following are planned:
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
 - Android-compatible licensed media muxer and advanced live capture.
-- Scheduler execution while JDM is closed, speed limiter, site grabber,
+- Scheduler execution while JDM is closed, site grabber,
   persistent Windows background service and tray integration.
 - Native Windows installer, background Android service and notifications.
 - Per-server retry policies, checksums and advanced test coverage.
@@ -240,6 +271,8 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
 - `lib/download/download_record.dart` — persisted task model.
 - `lib/download/download_controller.dart` — background HTTP(S) stream and
   pause/resume logic; testable with custom directories.
+- `lib/download/download_rate_limiter.dart` — shared global token bucket
+  for built-in file and HLS downloads.
 - `lib/main.dart` — adaptive Flutter UI.
 - `lib/integration/browser_bridge_server.dart` — authenticated loopback IPC.
 - `lib/video/video_source_detector.dart` — URL/MIME media classification.
@@ -253,6 +286,8 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
 - `test/video_download_test.dart` — local MPEG-TS HLS and DASH detection tests.
 - `test/scheduled_download_test.dart` — scheduler persistence, pause, and
   deferred-start tests.
+- `test/queue_rate_limit_test.dart` — queue ordering, pause/resume-all,
+  preference persistence, and token-bucket timing tests.
 - `test/download_controller_test.dart` — local HTTP fixture tests.
 - `.github/workflows/build.yml` — CI builds for both platforms.
 
