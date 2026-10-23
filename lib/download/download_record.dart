@@ -1,4 +1,5 @@
 enum DownloadStatus { queued, downloading, paused, completed, failed }
+enum DownloadKind { file, directVideo, hls, dash }
 
 class DownloadSegment {
   DownloadSegment({
@@ -45,12 +46,17 @@ class DownloadRecord {
     this.lastModified,
     this.error,
     this.usedConnections = 1,
+    this.kind = DownloadKind.file,
+    this.hlsCompletedSegments = 0,
+    this.hlsTotalSegments = 0,
+    this.hlsCommittedBytes = 0,
+    this.hlsFingerprint,
     List<DownloadSegment>? segments,
   }) : segments = segments ?? [];
 
   final String id;
   final String url;
-  final String fileName;
+  String fileName;
   String savePath;
   final DateTime createdAt;
   DownloadStatus status;
@@ -60,12 +66,22 @@ class DownloadRecord {
   String? lastModified;
   String? error;
   int usedConnections;
+  DownloadKind kind;
+  int hlsCompletedSegments;
+  int hlsTotalSegments;
+  int hlsCommittedBytes;
+  String? hlsFingerprint;
   final List<DownloadSegment> segments;
   double bytesPerSecond = 0;
 
-  double? get fraction => totalBytes == null || totalBytes == 0
-      ? null
-      : (downloadedBytes / totalBytes!).clamp(0.0, 1.0).toDouble();
+  double? get fraction {
+    if (kind == DownloadKind.hls && hlsTotalSegments > 0) {
+      return (hlsCompletedSegments / hlsTotalSegments).clamp(0.0, 1.0).toDouble();
+    }
+    return totalBytes == null || totalBytes == 0
+        ? null
+        : (downloadedBytes / totalBytes!).clamp(0.0, 1.0).toDouble();
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -80,6 +96,11 @@ class DownloadRecord {
         'lastModified': lastModified,
         'error': error,
         'usedConnections': usedConnections,
+        'kind': kind.name,
+        'hlsCompletedSegments': hlsCompletedSegments,
+        'hlsTotalSegments': hlsTotalSegments,
+        'hlsCommittedBytes': hlsCommittedBytes,
+        'hlsFingerprint': hlsFingerprint,
         'segments': segments.map((s) => s.toJson()).toList(),
       };
 
@@ -99,6 +120,15 @@ class DownloadRecord {
         lastModified: json['lastModified'] as String?,
         error: json['error'] as String?,
         usedConnections: (json['usedConnections'] as num?)?.toInt() ?? 1,
+        kind: DownloadKind.values.firstWhere(
+          (kind) => kind.name == json['kind'],
+          orElse: () => DownloadKind.file,
+        ),
+        hlsCompletedSegments:
+            (json['hlsCompletedSegments'] as num?)?.toInt() ?? 0,
+        hlsTotalSegments: (json['hlsTotalSegments'] as num?)?.toInt() ?? 0,
+        hlsCommittedBytes: (json['hlsCommittedBytes'] as num?)?.toInt() ?? 0,
+        hlsFingerprint: json['hlsFingerprint'] as String?,
         segments: (json['segments'] as List<dynamic>? ?? [])
             .map((value) => DownloadSegment.fromJson(
                 Map<String, dynamic>.from(value as Map)))

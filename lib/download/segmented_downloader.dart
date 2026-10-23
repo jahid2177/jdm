@@ -4,11 +4,13 @@ import 'dart:math';
 import 'download_record.dart';
 
 class RangeProbe {
-  const RangeProbe(this.totalBytes, this.etag, this.lastModified);
+  const RangeProbe(this.totalBytes, this.etag, this.lastModified,
+      {this.mimeType});
 
   final int totalBytes;
   final String? etag;
   final String? lastModified;
+  final String? mimeType;
 
   String? get validator => etag != null && !etag!.startsWith('W/')
       ? etag
@@ -50,6 +52,7 @@ class SegmentedDownloader {
         size,
         response.headers.value(HttpHeaders.etagHeader),
         response.headers.value(HttpHeaders.lastModifiedHeader),
+        mimeType: response.headers.contentType?.mimeType,
       );
     } finally {
       client.close(force: true);

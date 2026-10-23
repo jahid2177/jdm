@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 3**, a cross-platform HTTP(S)
+This repository contains **Milestone 4**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -50,6 +50,34 @@ desktop download managers. It does not contain Internet Download Manager code.
 - Tests for malformed native messages, forbidden URL schemes, unauthenticated
   bridge requests and valid end-to-end queueing with a local test HTTP server.
 
+## New in Milestone 4 — video link handling
+
+- Identify direct MP4, M4V, MKV, MOV, WebM, AVI and TS downloads from URL
+  extensions or the server's `Content-Type` header.
+- Identify HLS `.m3u8` and DASH `.mpd` links, including extensionless HLS
+  endpoints when the server returns the HLS MIME type.
+- Download **completed, unencrypted MPEG-TS HLS video-on-demand playlists**.
+  The HLS parser resolves relative segment links and can select the highest
+  advertised bandwidth variant when audio is already muxed in the video.
+- Assemble verified MPEG-TS packets in segment order, producing a **`.ts`
+  file**. Never rename raw MPEG-TS bytes to `.mp4`.
+- Save completed HLS segment count and committed output length. On resume,
+  discard interrupted segment tails; restart if playlist URLs change.
+- Show a video type label and HLS segment progress in Windows and Android UI.
+- Add a **Download video with JDM** context-menu command for HTML video
+  elements exposing an HTTP(S) source URL in Chrome, Edge and Firefox.
+- Fail explicitly for encrypted HLS, live playlists, fragmented MP4, separate
+  audio tracks, byte-range playlists, discontinuities and DASH media merging.
+- New automated fixture tests for HLS playlist parsing, download assembly,
+  change recovery and clearly reported unsupported formats.
+
+**What it does not do:** This is not a universal streaming video ripper. It
+does not fetch DRM-protected media, browser cookies, `blob:`/`mediasource:`
+URLs, separate audio or fMP4 tracks. DASH/MPD URLs are detected but cannot
+yet be converted into playable video. Full remuxing requires a separately
+integrated, licensed media muxer such as FFmpeg. An HLS `.ts` file requires a
+player capable of reading MPEG Transport Streams.
+
 ### Browser extension setup on Windows
 
 1. Download the **JDM-Windows-x64** GitHub Actions artifact and extract it
@@ -85,7 +113,9 @@ desktop download managers. It does not contain Internet Download Manager code.
 6. Start `jahid_download_manager.exe` **before** sending any links. Restart
    the browsers after registering the native host. Right-click a direct file
    link and choose **Download link with JDM**, or use the toolbar form. JDM
-   should add that HTTP(S) URL to its list and show progress.
+   should add that HTTP(S) URL to its list and show progress. You can also
+   right-click a video element and use **Download video with JDM** if the
+   browser exposes its direct HTTP(S) source link.
 
 Windows may block unsigned PowerShell scripts depending on local execution
 policy. Respect your organization's security policy; a signed installer is a
@@ -103,10 +133,10 @@ JDM's per-user native host and its related manifest; it does not erase saved
 downloads or uninstall the browser extension. Moving the extracted release
 folder after registration requires running the install script again.
 
-**Scope:** Browsers send a URL selected by the user. This does not intercept
-every download or share signed-in browser cookies, HTTP headers, DRM playback,
-HLS/DASH manifests, or restricted streams. Some page URLs download HTML rather
-than video or other embedded media; this is expected for Milestone 3.
+**Scope:** Browsers send a URL selected by the user. They do not extract
+private-site sessions or inspect network streams. Direct video files and the
+HLS VOD subset above are now accepted; full DASH or protected media is not.
+Some page URLs download HTML rather than embedded video.
 
 ## Not yet implemented
 
@@ -116,7 +146,8 @@ This is **not the full IDM-equivalent app**. The following are planned:
 - Android Downloads folder export through Storage Access Framework/MediaStore.
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
-- Video detection, HLS/DASH, licensed optional FFmpeg integration.
+- DASH audio/video download and muxing, HLS fMP4/separate audio, optional
+  appropriately licensed FFmpeg integration, advanced live capture.
 - Download queues, scheduler, speed limiter, site grabber, tray integration.
 - Native Windows installer, background Android service and notifications.
 - Per-server retry policies, checksums and advanced test coverage.
@@ -178,10 +209,13 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
   pause/resume logic; testable with custom directories.
 - `lib/main.dart` — adaptive Flutter UI.
 - `lib/integration/browser_bridge_server.dart` — authenticated loopback IPC.
+- `lib/video/video_source_detector.dart` — URL/MIME media classification.
+- `lib/video/hls_vod_downloader.dart` — conservative MPEG-TS HLS VOD downloader.
 - `native_messaging/` — Windows Native Messaging protocol and executable.
 - `browser_extensions/` — unpacked Chromium and Firefox add-ons.
 - `browser_integration/` — per-browser Windows registration scripts.
 - `test/browser_bridge_test.dart` — native protocol and loopback queue tests.
+- `test/video_download_test.dart` — local MPEG-TS HLS and DASH detection tests.
 - `test/download_controller_test.dart` — local HTTP fixture tests.
 - `.github/workflows/build.yml` — CI builds for both platforms.
 

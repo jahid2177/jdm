@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'download_record.dart';
 import 'segmented_downloader.dart';
+import '../video/hls_vod_downloader.dart';
+import '../video/video_source_detector.dart';
 
 /// Streaming HTTP(S) downloader shared by Windows and Android.
 /// Uses verified byte ranges when available and a single stream otherwise.
@@ -79,7 +81,11 @@ class DownloadController extends ChangeNotifier {
         record.status = DownloadStatus.paused;
       }
       if (record.status != DownloadStatus.completed) {
-        if (record.segments.isNotEmpty) {
+        if (record.kind == DownloadKind.hls) {
+          // The uncommitted tail of an interrupted HLS segment is rolled back
+          // before continuing. Never count that tail as completed progress.
+          record.downloadedBytes = record.hlsCommittedBytes;
+        } else if (record.segments.isNotEmpty) {
           try {
             await SegmentedDownloader.syncFiles(record);
           } catch (error) {
@@ -117,9 +123,13 @@ class DownloadController extends ChangeNotifier {
     final inferred = uri.pathSegments.isEmpty || uri.pathSegments.last.isEmpty
         ? 'download'
         : uri.pathSegments.last;
-    final name = safeName(fileName == null || fileName.trim().isEmpty
+    final kind = VideoSourceDetector.detect(uri);
+    var name = safeName(fileName == null || fileName.trim().isEmpty
         ? inferred
         : fileName);
+    if (kind == DownloadKind.hls) {
+      name = safeName(VideoSourceDetector.transportStreamName(name));
+    }
     final id = '${DateTime.now().microsecondsSinceEpoch}-${_sequence++}';
     final record = DownloadRecord(
       id: id,
@@ -127,6 +137,7 @@ class DownloadController extends ChangeNotifier {
       fileName: name,
       savePath: '${downloadDirectory.path}${Platform.pathSeparator}$name',
       createdAt: DateTime.now(),
+      kind: kind,
     );
     _records.insert(0, record);
     notifyListeners();
@@ -223,10 +234,32 @@ class DownloadController extends ChangeNotifier {
   Future<void> _download(DownloadRecord record) async {
     final part = _partialFile(record);
     await part.parent.create(recursive: true);
+    if (record.kind == DownloadKind.hls) {
+      await _downloadHls(record, part);
+      return;
+    }
+    if (record.kind == DownloadKind.dash) {
+      throw UnsupportedError('DASH/MPD detected. Audio/video segment merging is not yet supported.');
+    }
     final existing = await part.exists() ? await part.length() : 0;
     if (record.segments.isNotEmpty || existing == 0) {
       final probe = await SegmentedDownloader.probe(Uri.parse(record.url));
       if (record.status != DownloadStatus.downloading) return;
+      if ((record.kind == DownloadKind.file ||
+              record.kind == DownloadKind.directVideo) &&
+          probe?.mimeType != null) {
+        final detected = VideoSourceDetector.detect(
+          Uri.parse(record.url), mimeType: probe!.mimeType,
+        );
+        _setKind(record, detected);
+        if (detected == DownloadKind.hls) {
+          await _downloadHls(record, _partialFile(record));
+          return;
+        }
+        if (detected == DownloadKind.dash) {
+          throw UnsupportedError('DASH/MPD detected. A media muxer is required.');
+        }
+      }
       if (record.segments.isNotEmpty) {
         final previous = RangeProbe(
           record.totalBytes ?? 0, record.etag, record.lastModified,
@@ -328,6 +361,29 @@ class DownloadController extends ChangeNotifier {
         response.statusCode != HttpStatus.partialContent) {
       throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(record.url));
     }
+    if (record.kind == DownloadKind.directVideo &&
+        response.headers.contentType?.mimeType == 'text/html') {
+      throw const FormatException(
+          'The server returned an HTML page instead of a video file.');
+    }
+    if (existing == 0 && (record.kind == DownloadKind.file ||
+        record.kind == DownloadKind.directVideo)) {
+      final kind = VideoSourceDetector.detect(Uri.parse(record.url),
+          mimeType: response.headers.contentType?.mimeType);
+      if (kind != DownloadKind.file && kind != record.kind) {
+        _setKind(record, kind);
+        if (kind == DownloadKind.hls || kind == DownloadKind.dash) {
+          client.close(force: true);
+          await _save();
+          if (kind == DownloadKind.hls) {
+            await _downloadHls(record, _partialFile(record));
+            return;
+          }
+          throw UnsupportedError('DASH/MPD detected. A media muxer is required.');
+        }
+        notifyListeners();
+      }
+    }
     final encoding = response.headers.value(HttpHeaders.contentEncodingHeader);
     if (encoding != null && encoding.toLowerCase() != 'identity') {
       throw StateError('Server returned an encoded response unexpectedly.');
@@ -399,6 +455,60 @@ class DownloadController extends ChangeNotifier {
     }
 
     await _finalizeFile(record, part);
+  }
+
+  void _setKind(DownloadRecord record, DownloadKind kind) {
+    if (kind == record.kind) return;
+    record.kind = kind;
+    if (kind == DownloadKind.hls) {
+      record.fileName = safeName(
+          VideoSourceDetector.transportStreamName(record.fileName));
+      record.savePath =
+          '${downloadDirectory.path}${Platform.pathSeparator}${record.fileName}';
+    }
+    notifyListeners();
+  }
+
+  Future<void> _downloadHls(DownloadRecord record, File partialFile) async {
+    final client = HttpClient()
+      ..autoUncompress = false
+      ..connectionTimeout = const Duration(seconds: 25);
+    _clients[record.id] = client;
+    final clock = Stopwatch()..start();
+    var lastMs = 0;
+    var lastBytes = record.downloadedBytes;
+    var lastCompletedSegments = record.hlsCompletedSegments;
+    await HlsVodDownloader.download(
+      client: client,
+      record: record,
+      partialFile: partialFile,
+      isDownloading: () => record.status == DownloadStatus.downloading,
+      persist: _save,
+      onProgress: () {
+        if (record.downloadedBytes < lastBytes) {
+          lastBytes = record.downloadedBytes;
+          lastMs = clock.elapsedMilliseconds;
+        }
+        final elapsed = clock.elapsedMilliseconds - lastMs;
+        if (elapsed >= 500) {
+          record.bytesPerSecond =
+              (record.downloadedBytes - lastBytes) * 1000 / elapsed;
+          lastMs = clock.elapsedMilliseconds;
+          lastBytes = record.downloadedBytes;
+        }
+        if (elapsed >= 500 ||
+            lastCompletedSegments != record.hlsCompletedSegments) {
+          lastCompletedSegments = record.hlsCompletedSegments;
+          notifyListeners();
+        }
+      },
+    );
+    if (record.status != DownloadStatus.downloading) return;
+    if (record.hlsCompletedSegments != record.hlsTotalSegments ||
+        record.hlsTotalSegments == 0) {
+      throw StateError('The HLS video is missing segments.');
+    }
+    await _finalizeFile(record, partialFile);
   }
 
   Future<void> _finalizeFile(DownloadRecord record, File part) async {

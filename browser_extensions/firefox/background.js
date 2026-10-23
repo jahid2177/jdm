@@ -2,6 +2,7 @@
 const HOST = "com.jahidul.jdm";
 const MENU_LINK = "jdm-download-link";
 const MENU_PAGE = "jdm-download-page";
+const MENU_VIDEO = "jdm-download-video";
 
 function isSupportedUrl(url) {
   try {
@@ -35,12 +36,14 @@ function installMenus() {
   browser.contextMenus.removeAll().then(() => {
     browser.contextMenus.create({id: MENU_LINK, title: "Download link with JDM", contexts: ["link"]});
     browser.contextMenus.create({id: MENU_PAGE, title: "Download page URL with JDM", contexts: ["page"]});
+    browser.contextMenus.create({id: MENU_VIDEO, title: "Download video with JDM", contexts: ["video"]});
   });
 }
 browser.runtime.onInstalled.addListener(installMenus);
 browser.runtime.onStartup.addListener(installMenus);
 browser.contextMenus.onClicked.addListener((info, tab) => {
   const url = info.menuItemId === MENU_LINK ? info.linkUrl :
+      info.menuItemId === MENU_VIDEO ? info.srcUrl :
       info.menuItemId === MENU_PAGE ? (info.pageUrl || tab?.url) : null;
   if (url) void queueLink(url);
 });

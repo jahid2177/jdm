@@ -268,7 +268,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.3.0 • Md Jahidul Islam',
+              child: Text('JDM 0.4.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -358,6 +358,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             columnSpacing: 20,
             columns: const [
               DataColumn(label: Text('FILE')),
+              DataColumn(label: Text('TYPE')),
               DataColumn(label: Text('SIZE')),
               DataColumn(label: Text('PROGRESS')),
               DataColumn(label: Text('SPEED')),
@@ -376,6 +377,7 @@ class _DownloadHomeState extends State<DownloadHome> {
                           overflow: TextOverflow.ellipsis),
                     ),
                   )),
+                  DataCell(Text(_kindLabel(record.kind))),
                   DataCell(Text(_bytes(record.totalBytes))),
                   DataCell(_progress(record, width: 160)),
                   DataCell(Text(record.status == DownloadStatus.downloading
@@ -409,6 +411,9 @@ class _DownloadHomeState extends State<DownloadHome> {
                         style: const TextStyle(fontWeight: FontWeight.w600))),
                     _actions(record),
                   ]),
+                  const SizedBox(height: 5),
+                  Text(_kindLabel(record.kind),
+                      style: const TextStyle(fontSize: 11)),
                   const SizedBox(height: 10),
                   _progress(record, width: double.infinity),
                   const SizedBox(height: 8),
@@ -421,6 +426,10 @@ class _DownloadHomeState extends State<DownloadHome> {
                   const SizedBox(height: 5),
                   Text('${record.usedConnections} connection(s)',
                       style: const TextStyle(fontSize: 11)),
+                  if (record.kind == DownloadKind.hls &&
+                      record.hlsTotalSegments > 0)
+                    Text('${record.hlsCompletedSegments}/${record.hlsTotalSegments} video segments',
+                        style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
                     Text(record.error!, style: const TextStyle(color: Colors.red,
@@ -446,9 +455,11 @@ class _DownloadHomeState extends State<DownloadHome> {
               borderRadius: BorderRadius.circular(10),
             ),
             const SizedBox(height: 5),
-            Text(record.fraction == null
-                ? _bytes(record.downloadedBytes)
-                : '${(record.fraction! * 100).toStringAsFixed(1)}%',
+            Text(record.kind == DownloadKind.hls && record.hlsTotalSegments > 0
+                ? '${record.hlsCompletedSegments}/${record.hlsTotalSegments} segments • ${_bytes(record.downloadedBytes)}'
+                : record.fraction == null
+                    ? _bytes(record.downloadedBytes)
+                    : '${(record.fraction! * 100).toStringAsFixed(1)}%',
                 style: const TextStyle(fontSize: 11)),
           ],
         ),
@@ -495,6 +506,13 @@ class _DownloadHomeState extends State<DownloadHome> {
             style: const TextStyle(fontSize: 11)),
       );
 }
+
+String _kindLabel(DownloadKind kind) => switch (kind) {
+      DownloadKind.file => 'File',
+      DownloadKind.directVideo => 'Video',
+      DownloadKind.hls => 'HLS MPEG-TS',
+      DownloadKind.dash => 'DASH (MPD)',
+    };
 
 String _bytes(int? size) {
   if (size == null) return 'Unknown';

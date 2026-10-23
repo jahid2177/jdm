@@ -8,6 +8,7 @@ const base = path.join(__dirname, "..", "browser_extensions");
 
 async function chromium() {
   const listeners = {};
+  const menus = [];
   let callCount = 0;
   const chrome = {
     runtime: {
@@ -23,7 +24,7 @@ async function chromium() {
     },
     contextMenus: {
       removeAll: cb => cb(),
-      create: () => {},
+      create: menu => menus.push(menu),
       onClicked: {addListener: fn => listeners.clicked = fn}
     },
     storage: {local: {set: async () => {}}},
@@ -32,6 +33,7 @@ async function chromium() {
   const code = fs.readFileSync(path.join(base, "chromium", "background.js"), "utf8");
   vm.runInNewContext(code, {chrome, URL});
   listeners.installed();
+  assert.ok(menus.some(menu => menu.contexts.includes("video")));
   const result = await new Promise(resolve => listeners.message({
     action: "add_download", url: "https://example.com/file.zip"
   }, null, resolve));
@@ -45,6 +47,7 @@ async function chromium() {
 
 async function firefox() {
   const listeners = {};
+  const menus = [];
   let callCount = 0;
   const browser = {
     runtime: {
@@ -60,7 +63,7 @@ async function firefox() {
     },
     contextMenus: {
       removeAll: async () => {},
-      create: () => {},
+      create: menu => menus.push(menu),
       onClicked: {addListener: fn => listeners.clicked = fn}
     },
     storage: {local: {set: async () => {}}},
@@ -69,6 +72,8 @@ async function firefox() {
   const code = fs.readFileSync(path.join(base, "firefox", "background.js"), "utf8");
   vm.runInNewContext(code, {browser, URL});
   listeners.installed();
+  await Promise.resolve();
+  assert.ok(menus.some(menu => menu.contexts.includes("video")));
   const result = await listeners.message({
     action: "add_download", url: "https://example.com/file.zip"
   });
