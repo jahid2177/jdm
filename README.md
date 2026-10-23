@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 9**, a cross-platform HTTP(S)
+This repository contains **Milestone 10 (v1.0.0)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -253,6 +253,45 @@ must remain present when the platform scaffold is generated in GitHub Actions.
 **Milestone 9 setting note:** Manual Android Export from Milestone 8 still
 works when auto-export is off. With auto-export on, no additional export tap
 is necessary after a new completed task while the JDM process remains alive.
+
+## New in Milestone 10 — JSON history backup, intelligent retry and installer guidance
+
+- A new **History** toolbar menu lets Windows and Android users **Export
+  history JSON** and **Restore history JSON** using native file dialogs.
+  The backup is a versioned JSON document with source URLs, file names, dates,
+  media kind, quality and previous status. **Downloaded files are not in the
+  backup.** URLs may contain access tokens, so keep exported JSON private.
+- Restore is an additive, duplicate-aware operation: existing downloads and
+  completed file bytes are untouched. Entries from the backup receive new
+  internal IDs and safe local filenames. Every imported item starts **Paused**
+  with zero downloaded bytes, even if its old entry was completed. JDM does
+  not automatically contact imported URLs. Resume an entry manually to start
+  a new download if the remote source is still reachable.
+- Backup validation rejects unsupported format versions, invalid HTTP(S)
+  URLs, user-info credentials in URLs, malformed entries and oversized files.
+  Invalid input is rejected before adding any records.
+- The queue can now automatically retry temporary socket/timeout failures and
+  HTTP **408, 429 and 5xx** responses for direct HTTP(S) file/video links.
+  Retry attempts use increasing delays (2, 4, 8, 16, 32 seconds) and stop
+  when the selected limit is reached. Default **2** automatic retries; set
+  **0–5** in **Speed and queue settings**. HTTP 404, malformed media, DRM,
+  and FFmpeg/HLS unsupported failures are not auto-retried.
+- Pending retry time and attempt count persist to local download state.
+  Manual **Resume / Retry** resets the retry count and starts immediately;
+  **Pause** prevents future automatic attempts. Retries require the JDM
+  process to be running.
+- Windows per-user installer v1.0.0 includes a **Browser integration setup**
+  Start Menu shortcut and optional post-install guide. Chrome/Edge and Firefox
+  native messaging registration still requires the user's approval and actual
+  extension ID. The installer handles in-use applications more gracefully;
+  it does not silently change browser profiles or remove download history.
+- Added tests covering history validation, safe additive restore, 503 recovery,
+  non-retryable 404, pausing a pending retry, and persisted retry preferences.
+
+**Platform build note:** The source is supplied with GitHub Actions for the
+Android ARM64 APK, Windows ZIP and `JDM-Setup-v1.0.0-Windows-x64.exe`.
+Host-side Flutter/Dart build verification is still needed on an SDK-equipped
+machine; Windows/Android runtime behavior has not been claimed device-tested.
 
 ### Browser extension setup on Windows
 

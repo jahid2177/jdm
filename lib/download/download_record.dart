@@ -56,6 +56,8 @@ class DownloadRecord {
     this.hlsFingerprint,
     this.androidDownloadsUri,
     this.androidExportError,
+    this.retryAttempts = 0,
+    this.retryAt,
     List<DownloadSegment>? segments,
   }) : segments = segments ?? [];
 
@@ -80,6 +82,8 @@ class DownloadRecord {
   String? hlsFingerprint;
   String? androidDownloadsUri;
   String? androidExportError;
+  int retryAttempts;
+  DateTime? retryAt;
   final List<DownloadSegment> segments;
   double bytesPerSecond = 0;
 
@@ -114,6 +118,8 @@ class DownloadRecord {
         'hlsFingerprint': hlsFingerprint,
         'androidDownloadsUri': androidDownloadsUri,
         'androidExportError': androidExportError,
+        'retryAttempts': retryAttempts,
+        'retryAt': retryAt?.toIso8601String(),
         'segments': segments.map((s) => s.toJson()).toList(),
       };
 
@@ -151,6 +157,11 @@ class DownloadRecord {
         hlsFingerprint: json['hlsFingerprint'] as String?,
         androidDownloadsUri: json['androidDownloadsUri'] as String?,
         androidExportError: json['androidExportError'] as String?,
+        retryAttempts: ((json['retryAttempts'] as num?)?.toInt() ?? 0)
+            .clamp(0, 100).toInt(),
+        retryAt: json['retryAt'] is String
+            ? DateTime.tryParse(json['retryAt'] as String)
+            : null,
         segments: (json['segments'] as List<dynamic>? ?? [])
             .map((value) => DownloadSegment.fromJson(
                 Map<String, dynamic>.from(value as Map)))

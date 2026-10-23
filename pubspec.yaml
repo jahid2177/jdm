@@ -1,7 +1,7 @@
 name: jahid_download_manager
 description: A cross-platform download manager for Windows and Android.
 publish_to: none
-version: 0.9.0+9
+version: 1.0.0+10
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -18,6 +18,8 @@ dependencies:
   cross_file: 0.3.4+2
   open_filex: 4.7.0
   share_plus: 11.1.0
+  # Native JSON backup save/open dialogs for Windows and Android.
+  file_picker: 8.3.7
 
 dev_dependencies:
   flutter_test:

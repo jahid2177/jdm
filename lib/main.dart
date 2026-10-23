@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'download/download_controller.dart';
+import 'download/download_history_backup.dart';
 import 'download/download_record.dart';
 import 'integration/android_background_keeper.dart';
 import 'integration/android_completion_coordinator.dart';
@@ -286,6 +290,83 @@ class _DownloadHomeState extends State<DownloadHome> {
     );
   }
 
+  Future<void> _historyAction(String action) async {
+    if (action == 'export') {
+      try {
+        final backup = widget.controller.exportHistoryJson();
+        final bytes = Uint8List.fromList(utf8.encode(backup));
+        final date = DateTime.now();
+        final name = 'JDM-History-${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}.json';
+        final selected = await FilePicker.platform.saveFile(
+          dialogTitle: 'Export JDM history JSON',
+          fileName: name,
+          type: FileType.custom,
+          allowedExtensions: ['json'],
+          bytes: bytes,
+        );
+        if (selected == null) return;
+        // The Android Storage Access Framework writes the supplied bytes.
+        // On Windows, also persist to the user-selected filesystem path.
+        if (Platform.isWindows) {
+          await File(selected).writeAsBytes(bytes, flush: true);
+        }
+        if (mounted) _message('History JSON exported. Keep it private: URLs may contain tokens.');
+      } catch (error) {
+        if (mounted) _message('History export failed: $error');
+      }
+      return;
+    }
+    if (action != 'restore') return;
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        dialogTitle: 'Select a JDM history backup',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+      if (picked == null || picked.files.isEmpty) return;
+      final selected = picked.files.single;
+      if (selected.size > DownloadHistoryBackup.maxJsonCharacters) {
+        throw const FormatException('The history backup is too large.');
+      }
+      final bytes = selected.bytes ?? (selected.path == null
+          ? null : await File(selected.path!).readAsBytes());
+      if (bytes == null) {
+        throw const FileSystemException('Could not read the selected JSON file.');
+      }
+      if (bytes.length > DownloadHistoryBackup.maxJsonCharacters) {
+        throw const FormatException('The history backup is too large.');
+      }
+      final json = utf8.decode(bytes);
+      final entries = DownloadHistoryBackup.decode(json);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restore download history?'),
+          content: Text('Import ${entries.length} history entries? Existing '
+              'downloads and files are preserved. Imported entries start '
+              'PAUSED; this JSON contains no downloaded file bytes. '
+              'You must manually resume any download you want again.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true),
+                child: const Text('Restore history')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      final restored = await widget.controller.restoreHistoryJson(json);
+      if (mounted) {
+        _message('Restored ${restored.restored} paused entries; '
+            '${restored.skipped} duplicates skipped.');
+      }
+    } catch (error) {
+      if (mounted) _message('History restore failed: $error');
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
@@ -298,6 +379,17 @@ class _DownloadHomeState extends State<DownloadHome> {
             ],
           ),
           actions: [
+            PopupMenuButton<String>(
+              tooltip: 'Download history backup and restore',
+              icon: const Icon(Icons.history_edu_outlined),
+              onSelected: _historyAction,
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'export',
+                    child: Text('Export history JSON')),
+                PopupMenuItem(value: 'restore',
+                    child: Text('Restore history JSON')),
+              ],
+            ),
             PopupMenuButton<String>(
               tooltip: 'Queue actions',
               icon: const Icon(Icons.playlist_play),
@@ -409,7 +501,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.9.0 • Md Jahidul Islam',
+              child: Text('JDM 1.0.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -575,6 +667,10 @@ class _DownloadHomeState extends State<DownloadHome> {
                       record.status == DownloadStatus.queued)
                     Text('Scheduled: ${_whenString(record.scheduledAt!)}',
                         style: const TextStyle(fontSize: 11)),
+                  if (record.retryAt != null &&
+                      record.status == DownloadStatus.queued)
+                    Text('Auto retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}: ${_whenString(record.retryAt!)}',
+                        style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
                     Text(record.error!, style: const TextStyle(color: Colors.red,
@@ -627,8 +723,10 @@ class _DownloadHomeState extends State<DownloadHome> {
   Widget _status(DownloadRecord record) {
     final (label, color) = switch (record.status) {
       DownloadStatus.queued => (
-        record.scheduledAt?.isAfter(DateTime.now()) == true
-            ? 'Scheduled' : 'Queued',
+        record.retryAt?.isAfter(DateTime.now()) == true
+            ? 'Retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}'
+            : record.scheduledAt?.isAfter(DateTime.now()) == true
+                ? 'Scheduled' : 'Queued',
         Colors.orange,
       ),
       DownloadStatus.downloading => ('Downloading', Colors.blue),
@@ -711,6 +809,7 @@ class _QueueSettingsDialog extends StatefulWidget {
 class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
   late int _limit;
   late int _concurrent;
+  late int _retries;
   bool _changingBackground = false;
   bool _changingCompletionPreference = false;
   String? _backgroundFeedback;
@@ -721,6 +820,7 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     super.initState();
     _limit = widget.controller.speedLimitKibPerSecond;
     _concurrent = widget.controller.maxSimultaneous;
+    _retries = widget.controller.maxAutomaticRetries;
   }
 
   Future<void> _toggleAndroidBackground(bool enabled) async {
@@ -834,6 +934,27 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
               const Text('Speed limits apply to built-in HTTP and HLS '
                   'downloads, including segmented connections. External '
                   'FFmpeg transfers are not throttled.',
+                  style: TextStyle(fontSize: 12)),
+              const Divider(height: 32),
+              const Text('Automatic retries for transient network errors'),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<int>(
+                initialValue: _retries,
+                isExpanded: true,
+                items: List.generate(6, (value) => DropdownMenuItem(
+                  value: value,
+                  child: Text(value == 0 ? 'Disabled' : '$value retries'),
+                )),
+                onChanged: (value) async {
+                  if (value == null) return;
+                  setState(() => _retries = value);
+                  await widget.controller.setMaxAutomaticRetries(value);
+                },
+              ),
+              const SizedBox(height: 6),
+              const Text('Retries only network timeouts, connection errors, '
+                  'HTTP 408/429 and HTTP 5xx with increasing delays. '
+                  'Other errors stop; manual Resume / Retry remains available.',
                   style: TextStyle(fontSize: 12)),
               if (widget.background != null) ...[
                 const SizedBox(height: 16),

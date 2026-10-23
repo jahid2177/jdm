@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'download_record.dart';
+import 'download_history_backup.dart';
 import 'download_rate_limiter.dart';
 import 'segmented_downloader.dart';
 import '../video/hls_vod_downloader.dart';
@@ -21,6 +22,7 @@ class DownloadController extends ChangeNotifier {
     this.segmentThresholdBytes = 2 * 1024 * 1024,
     this.connectionsPerFile = 4,
     this.ffmpegExecutable,
+    this.retryBaseDelay = const Duration(seconds: 2),
   });
 
   factory DownloadController.forTesting(
@@ -29,12 +31,14 @@ class DownloadController extends ChangeNotifier {
     int segmentThresholdBytes = 2 * 1024 * 1024,
     int connectionsPerFile = 4,
     String? ffmpegExecutable,
+    Duration retryBaseDelay = const Duration(seconds: 2),
   ) => DownloadController._(
         stateDirectory,
         downloadDirectory,
         segmentThresholdBytes: segmentThresholdBytes,
         connectionsPerFile: connectionsPerFile,
         ffmpegExecutable: ffmpegExecutable,
+        retryBaseDelay: retryBaseDelay,
       );
 
   static Future<DownloadController> create() async {
@@ -62,6 +66,7 @@ class DownloadController extends ChangeNotifier {
   final int segmentThresholdBytes;
   final int connectionsPerFile;
   final String? ffmpegExecutable;
+  final Duration retryBaseDelay;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
   final Map<String, Process> _processes = {};
@@ -73,6 +78,7 @@ class DownloadController extends ChangeNotifier {
   Future<void> _finalizeBarrier = Future.value();
   int _sequence = 0;
   int maxSimultaneous = 3;
+  int maxAutomaticRetries = 2;
   bool _queuePaused = false;
   bool _androidBackgroundEnabled = false;
   bool _androidAutoExportEnabled = false;
@@ -86,6 +92,44 @@ class DownloadController extends ChangeNotifier {
   bool get androidCompletionNotificationsEnabled =>
       _androidCompletionNotificationsEnabled;
   int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
+
+  String exportHistoryJson() => DownloadHistoryBackup.encode(_records);
+
+  /// Merge safely: imported records are always PAUSED metadata-only entries.
+  /// No remote request is issued and saved files/partials are never touched.
+  Future<HistoryRestoreResult> restoreHistoryJson(String content) async {
+    final entries = DownloadHistoryBackup.decode(content);
+    final known = _records.map((record) => '${record.url}\u0000${record.fileName}').toSet();
+    final additions = <DownloadRecord>[];
+    var skipped = 0;
+    for (final entry in entries) {
+      final name = safeName(entry.fileName);
+      if (!known.add('${entry.url}\u0000$name')) {
+        skipped++;
+        continue;
+      }
+      final id = '${DateTime.now().microsecondsSinceEpoch}-${_sequence++}';
+      additions.add(DownloadRecord(
+        id: id,
+        url: entry.url,
+        fileName: name,
+        savePath: '${downloadDirectory.path}${Platform.pathSeparator}$name',
+        createdAt: entry.createdAt,
+        kind: entry.kind,
+        videoQuality: entry.quality,
+        status: DownloadStatus.paused,
+        totalBytes: entry.totalBytes,
+        error: 'Restored from history backup. Files are not included; '
+            'use Resume / Retry if you want to download this again.',
+      ));
+    }
+    _records.insertAll(0, additions);
+    if (additions.isNotEmpty) {
+      notifyListeners();
+      await _save();
+    }
+    return HistoryRestoreResult(additions.length, skipped);
+  }
 
   List<DownloadRecord> get queuedInPriorityOrder => List.unmodifiable(
         _records.reversed.where((r) => r.status == DownloadStatus.queued),
@@ -209,6 +253,27 @@ class DownloadController extends ChangeNotifier {
     _pump();
   }
 
+  Future<void> setMaxAutomaticRetries(int retries) async {
+    if (retries < 0 || retries > 5) {
+      throw RangeError.range(retries, 0, 5, 'retries');
+    }
+    maxAutomaticRetries = retries;
+    // A newly reduced limit also cancels retries that were already waiting.
+    var cancelled = false;
+    for (final record in _records) {
+      if (record.status == DownloadStatus.queued &&
+          record.retryAt != null && record.retryAttempts >= retries) {
+        record.status = DownloadStatus.failed;
+        record.retryAt = null;
+        cancelled = true;
+      }
+    }
+    notifyListeners();
+    await _saveSettings();
+    if (cancelled) await _save();
+    _pump();
+  }
+
   Future<void> setQueuePaused(bool paused) async {
     _queuePaused = paused;
     notifyListeners();
@@ -273,6 +338,8 @@ class DownloadController extends ChangeNotifier {
       if (record.status == DownloadStatus.paused) {
         record.status = DownloadStatus.queued;
         record.error = null;
+        record.retryAt = null;
+        record.retryAttempts = 0;
       }
     }
     notifyListeners();
@@ -316,6 +383,9 @@ class DownloadController extends ChangeNotifier {
       _rateLimiter.setBytesPerSecond(speed.clamp(0, 10240).toInt() * 1024);
       maxSimultaneous = ((settings['maxSimultaneous'] as num?)?.toInt() ?? 3)
           .clamp(1, 5).toInt();
+      maxAutomaticRetries =
+          ((settings['maxAutomaticRetries'] as num?)?.toInt() ?? 2)
+              .clamp(0, 5).toInt();
       _queuePaused = settings['queuePaused'] == true;
       _androidBackgroundEnabled = settings['androidBackgroundEnabled'] == true;
       _androidAutoExportEnabled = settings['androidAutoExportEnabled'] == true;
@@ -330,6 +400,7 @@ class DownloadController extends ChangeNotifier {
     final json = jsonEncode({
       'speedLimitKibPerSecond': speedLimitKibPerSecond,
       'maxSimultaneous': maxSimultaneous,
+      'maxAutomaticRetries': maxAutomaticRetries,
       'queuePaused': _queuePaused,
       'androidBackgroundEnabled': _androidBackgroundEnabled,
       'androidAutoExportEnabled': _androidAutoExportEnabled,
@@ -370,6 +441,8 @@ class DownloadController extends ChangeNotifier {
     // Explicit manual Resume means "start now" even if it was scheduled.
     record.scheduledAt = null;
     record.error = null;
+    record.retryAt = null;
+    record.retryAttempts = 0;
     notifyListeners();
     await _save();
     _pump();
@@ -406,7 +479,7 @@ class DownloadController extends ChangeNotifier {
     final now = DateTime.now();
     for (final record in _records.reversed) {
       if (record.status != DownloadStatus.queued) continue;
-      final due = record.scheduledAt;
+      final due = record.retryAt ?? record.scheduledAt;
       if (due != null && due.isAfter(now)) {
         if (nextDue == null || due.isBefore(nextDue)) nextDue = due;
         continue;
@@ -427,6 +500,7 @@ class DownloadController extends ChangeNotifier {
   Future<void> _run(DownloadRecord record) async {
     record.status = DownloadStatus.downloading;
     record.error = null;
+    record.retryAt = null;
     notifyListeners();
     try {
       await _save();
@@ -434,11 +508,21 @@ class DownloadController extends ChangeNotifier {
       if (record.status == DownloadStatus.downloading) {
         record.status = DownloadStatus.completed;
         record.bytesPerSecond = 0;
+        record.retryAttempts = 0;
       }
     } catch (error) {
       if (record.status != DownloadStatus.paused) {
-        record.status = DownloadStatus.failed;
+        record.bytesPerSecond = 0;
         record.error = error.toString();
+        if (_canAutomaticallyRetry(record, error)) {
+          record.retryAttempts++;
+          final factor = 1 << (record.retryAttempts - 1);
+          record.retryAt = DateTime.now().add(retryBaseDelay * factor);
+          record.status = DownloadStatus.queued;
+        } else {
+          record.retryAt = null;
+          record.status = DownloadStatus.failed;
+        }
       }
     } finally {
       _clients.remove(record.id)?.close(force: true);
@@ -452,6 +536,31 @@ class DownloadController extends ChangeNotifier {
       }
       _pump();
     }
+  }
+
+  bool _canAutomaticallyRetry(DownloadRecord record, Object error) {
+    if (record.retryAttempts >= maxAutomaticRetries ||
+        (record.kind != DownloadKind.file &&
+            record.kind != DownloadKind.directVideo)) {
+      return false;
+    }
+    if (error is SocketException || error is TimeoutException) return true;
+    if (error is HttpException) {
+      final message = error.message.toLowerCase();
+      if (message.contains('connection closed') ||
+          message.contains('connection reset')) {
+        return true;
+      }
+      final match = RegExp(r'\b([1-5]\d\d)\b').firstMatch(message);
+      final status = match == null ? null : int.tryParse(match.group(1)!);
+      return status == 408 || status == 429 ||
+          (status != null && status >= 500 && status <= 599);
+    }
+    if (error is StateError &&
+        error.message.toString().startsWith('Incomplete download:')) {
+      return true;
+    }
+    return false;
   }
 
   Future<void> _download(DownloadRecord record) async {

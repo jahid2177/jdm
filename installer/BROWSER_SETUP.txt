@@ -1,0 +1,40 @@
+JAHID DOWNLOAD MANAGER - WINDOWS BROWSER INTEGRATION
+Version 1.0.0 | Developer: Md Jahidul Islam
+
+The Windows installer includes the Chrome/Edge and Firefox extensions and
+the Windows native messaging host. For security, extension registration is
+opt-in and needs the REAL extension ID supplied by your browser.
+
+1. Open Chrome: chrome://extensions  (or Edge: edge://extensions).
+2. Enable Developer mode and choose Load unpacked.
+3. Select the installed folder:
+     %LOCALAPPDATA%\Programs\Jahid Download Manager\browser_extensions\chromium
+4. Copy the real extension ID from the browser's extension page.
+5. Open PowerShell and run the following commands after substituting your
+   actual installed location and Chrome/Edge extension ID:
+
+   $jdm = Join-Path $env:LOCALAPPDATA 'Programs\Jahid Download Manager'
+   & (Join-Path $jdm 'browser_integration\install_windows.ps1') -Browser Chrome -ExtensionId 'YOUR_REAL_CHROME_EXTENSION_ID'
+   & (Join-Path $jdm 'browser_integration\install_windows.ps1') -Browser Edge -ExtensionId 'YOUR_REAL_EDGE_EXTENSION_ID'
+
+   Run only the command(s) for browsers you actually use.
+
+Firefox: visit about:debugging#/runtime/this-firefox, Load Temporary Add-on,
+select browser_extensions\firefox\manifest.json, then run:
+
+   & (Join-Path $jdm 'browser_integration\install_windows.ps1') -Browser Firefox
+
+Temporary Firefox add-ons require reloading after the browser restarts.
+Browser extension installation must be approved by you. Do not change
+PowerShell execution policy to get around organization restrictions.
+
+After native host registration, restart your browser and launch JDM. Use
+the 'Download link with JDM' context menu or the toolbar extension.
+
+To remove the native messaging host, run uninstall_windows.ps1 for each
+browser (e.g. -Browser Chrome), BEFORE uninstalling JDM. Removing JDM itself
+does not remove independently configured browser permissions.
+
+Download history backup and restore are available from the clock/history
+button in the main JDM toolbar. JSON backups contain metadata including
+source URLs (which can contain private access tokens), but no file contents.
