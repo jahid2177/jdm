@@ -23,6 +23,7 @@ class DownloadController extends ChangeNotifier {
     this.connectionsPerFile = 4,
     this.ffmpegExecutable,
     this.retryBaseDelay = const Duration(seconds: 2),
+    this.reconnectBaseDelay = const Duration(seconds: 5),
   });
 
   factory DownloadController.forTesting(
@@ -32,6 +33,7 @@ class DownloadController extends ChangeNotifier {
     int connectionsPerFile = 4,
     String? ffmpegExecutable,
     Duration retryBaseDelay = const Duration(seconds: 2),
+    Duration reconnectBaseDelay = const Duration(seconds: 5),
   ) => DownloadController._(
         stateDirectory,
         downloadDirectory,
@@ -39,6 +41,7 @@ class DownloadController extends ChangeNotifier {
         connectionsPerFile: connectionsPerFile,
         ffmpegExecutable: ffmpegExecutable,
         retryBaseDelay: retryBaseDelay,
+        reconnectBaseDelay: reconnectBaseDelay,
       );
 
   static Future<DownloadController> create() async {
@@ -67,6 +70,7 @@ class DownloadController extends ChangeNotifier {
   final int connectionsPerFile;
   final String? ffmpegExecutable;
   final Duration retryBaseDelay;
+  final Duration reconnectBaseDelay;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
   final Map<String, Process> _processes = {};
@@ -83,6 +87,7 @@ class DownloadController extends ChangeNotifier {
   bool _androidBackgroundEnabled = false;
   bool _androidAutoExportEnabled = false;
   bool _androidCompletionNotificationsEnabled = false;
+  bool _autoResumeOnReconnectEnabled = true;
 
   List<DownloadRecord> get downloads => List.unmodifiable(_records);
   int get activeCount => _activeIds.length;
@@ -92,6 +97,11 @@ class DownloadController extends ChangeNotifier {
   bool get androidCompletionNotificationsEnabled =>
       _androidCompletionNotificationsEnabled;
   int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
+  bool get autoResumeOnReconnectEnabled => _autoResumeOnReconnectEnabled;
+
+  String categoryDirectoryPath(DownloadCategory category) =>
+      '${downloadDirectory.path}${Platform.pathSeparator}JDM'
+      '${Platform.pathSeparator}${category.folder}';
 
   String exportHistoryJson() => DownloadHistoryBackup.encode(_records);
 
@@ -113,9 +123,10 @@ class DownloadController extends ChangeNotifier {
         id: id,
         url: entry.url,
         fileName: name,
-        savePath: '${downloadDirectory.path}${Platform.pathSeparator}$name',
+        savePath: '${categoryDirectoryPath(entry.category)}${Platform.pathSeparator}$name',
         createdAt: entry.createdAt,
         kind: entry.kind,
+        category: entry.category,
         videoQuality: entry.quality,
         status: DownloadStatus.paused,
         totalBytes: entry.totalBytes,
@@ -202,6 +213,8 @@ class DownloadController extends ChangeNotifier {
     String? fileName,
     VideoQuality quality = VideoQuality.highest,
     DateTime? scheduledAt,
+    DownloadCategory? category,
+    List<String> alternateUrls = const [],
   }) async {
     final uri = Uri.tryParse(input.trim());
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) ||
@@ -218,14 +231,36 @@ class DownloadController extends ChangeNotifier {
     if (kind == DownloadKind.hls) {
       name = safeName(VideoSourceDetector.transportStreamName(name));
     }
+    if (alternateUrls.length > 5) {
+      throw const FormatException('Use at most five alternate URLs.');
+    }
+    final mirrors = <String>[];
+    for (final text in alternateUrls) {
+      final mirror = Uri.tryParse(text.trim());
+      if (mirror == null || !{'http', 'https'}.contains(mirror.scheme) ||
+          mirror.host.isEmpty || mirror.userInfo.isNotEmpty) {
+        throw const FormatException('Every mirror must be an HTTP(S) URL.');
+      }
+      if (mirror.toString() != uri.toString() &&
+          !mirrors.contains(mirror.toString())) {
+        mirrors.add(mirror.toString());
+      }
+    }
+    if (mirrors.isNotEmpty && kind != DownloadKind.file &&
+        kind != DownloadKind.directVideo) {
+      throw const FormatException('Mirrors currently support direct files and videos only.');
+    }
+    final chosenCategory = category ?? DownloadCategoryDetails.infer(name, kind);
     final id = '${DateTime.now().microsecondsSinceEpoch}-${_sequence++}';
     final record = DownloadRecord(
       id: id,
       url: uri.toString(),
       fileName: name,
-      savePath: '${downloadDirectory.path}${Platform.pathSeparator}$name',
+      savePath: '${categoryDirectoryPath(chosenCategory)}${Platform.pathSeparator}$name',
       createdAt: DateTime.now(),
       kind: kind,
+      category: chosenCategory,
+      alternateUrls: mirrors,
       videoQuality: quality,
       scheduledAt: scheduledAt,
     );
@@ -234,6 +269,63 @@ class DownloadController extends ChangeNotifier {
     await _save();
     _pump();
     return record;
+  }
+
+  /// Moves a completed file to a distinct category folder, or updates the
+  /// future destination of an untouched paused/queued download. Never moves
+  /// active writers, partial bytes or existing destination files.
+  Future<bool> changeCategory(String id, DownloadCategory category) async {
+    final record = _find(id);
+    if (record == null || _activeIds.contains(id) ||
+        record.status == DownloadStatus.downloading) return false;
+    if (record.category == category) return true;
+    if (record.status != DownloadStatus.completed &&
+        (record.downloadedBytes != 0 || record.segments.isNotEmpty)) return false;
+    if (record.status != DownloadStatus.completed &&
+        await _partialFile(record).exists() &&
+        await _partialFile(record).length() > 0) return false;
+    final folder = Directory(categoryDirectoryPath(category));
+    await folder.create(recursive: true);
+    var destination = File('${folder.path}${Platform.pathSeparator}${record.fileName}');
+    if (record.status == DownloadStatus.completed) {
+      final existing = File(record.savePath);
+      if (!await existing.exists()) return false;
+      var suffix = 1;
+      while (await destination.exists()) {
+        final dot = record.fileName.lastIndexOf('.');
+        final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
+        final ext = dot > 0 ? record.fileName.substring(dot) : '';
+        destination = File('${folder.path}${Platform.pathSeparator}$stem ($suffix)$ext');
+        suffix++;
+      }
+      await existing.rename(destination.path);
+      record.fileName = destination.uri.pathSegments.last;
+    } else if (await destination.exists()) {
+      // Avoid assigning a path already used by an existing file.
+      return false;
+    }
+    record.savePath = destination.path;
+    record.category = category;
+    notifyListeners();
+    await _save();
+    return true;
+  }
+
+  Future<void> setAutoResumeOnReconnect(bool enabled) async {
+    _autoResumeOnReconnectEnabled = enabled;
+    if (!enabled) {
+      for (final record in _records) {
+        if (record.waitingForNetwork && record.status == DownloadStatus.queued) {
+          record.waitingForNetwork = false;
+          record.retryAt = null;
+          record.status = DownloadStatus.failed;
+        }
+      }
+      await _save();
+    }
+    notifyListeners();
+    await _saveSettings();
+    _pump();
   }
 
   Future<void> setSpeedLimitKibPerSecond(int limit) async {
@@ -318,6 +410,8 @@ class DownloadController extends ChangeNotifier {
       if (record.status != DownloadStatus.downloading &&
           record.status != DownloadStatus.queued) continue;
       record.status = DownloadStatus.paused;
+      record.waitingForNetwork = false;
+      record.retryAt = null;
       _clients[record.id]?.close(force: true);
       _processes[record.id]?.kill();
     }
@@ -340,6 +434,8 @@ class DownloadController extends ChangeNotifier {
         record.error = null;
         record.retryAt = null;
         record.retryAttempts = 0;
+        record.waitingForNetwork = false;
+        record.reconnectChecks = 0;
       }
     }
     notifyListeners();
@@ -391,6 +487,8 @@ class DownloadController extends ChangeNotifier {
       _androidAutoExportEnabled = settings['androidAutoExportEnabled'] == true;
       _androidCompletionNotificationsEnabled =
           settings['androidCompletionNotificationsEnabled'] == true;
+      _autoResumeOnReconnectEnabled =
+          settings['autoResumeOnReconnectEnabled'] != false;
     } catch (_) {
       // If settings are corrupt, retain safe defaults without losing tasks.
     }
@@ -406,6 +504,7 @@ class DownloadController extends ChangeNotifier {
       'androidAutoExportEnabled': _androidAutoExportEnabled,
       'androidCompletionNotificationsEnabled':
           _androidCompletionNotificationsEnabled,
+      'autoResumeOnReconnectEnabled': _autoResumeOnReconnectEnabled,
     });
     _pendingSettingsSave = _pendingSettingsSave.catchError((Object _) {})
         .then((_) async {
@@ -425,6 +524,8 @@ class DownloadController extends ChangeNotifier {
     if (record == null || (record.status != DownloadStatus.downloading &&
         record.status != DownloadStatus.queued)) return;
     record.status = DownloadStatus.paused;
+    record.waitingForNetwork = false;
+    record.retryAt = null;
     _clients[id]?.close(force: true);
     _processes[id]?.kill();
     notifyListeners();
@@ -443,6 +544,8 @@ class DownloadController extends ChangeNotifier {
     record.error = null;
     record.retryAt = null;
     record.retryAttempts = 0;
+    record.waitingForNetwork = false;
+    record.reconnectChecks = 0;
     notifyListeners();
     await _save();
     _pump();
@@ -509,18 +612,38 @@ class DownloadController extends ChangeNotifier {
         record.status = DownloadStatus.completed;
         record.bytesPerSecond = 0;
         record.retryAttempts = 0;
+        record.waitingForNetwork = false;
+        record.reconnectChecks = 0;
       }
     } catch (error) {
       if (record.status != DownloadStatus.paused) {
         record.bytesPerSecond = 0;
         record.error = error.toString();
-        if (_canAutomaticallyRetry(record, error)) {
+        if (await _tryNextMirror(record, error)) {
+          record.retryAt = null;
+          record.retryAttempts = 0;
+          record.waitingForNetwork = false;
+          record.reconnectChecks = 0;
+          record.status = DownloadStatus.queued;
+        } else if (_autoResumeOnReconnectEnabled &&
+            _isConnectivityError(error)) {
+          record.waitingForNetwork = true;
+          record.reconnectChecks =
+              (record.reconnectChecks + 1).clamp(1, 20).toInt();
+          final power = (record.reconnectChecks - 1).clamp(0, 4).toInt();
+          final wait = reconnectBaseDelay * (1 << power);
+          record.retryAt = DateTime.now().add(
+              wait > const Duration(seconds: 60) ? const Duration(seconds: 60) : wait);
+          record.status = DownloadStatus.queued;
+        } else if (_canAutomaticallyRetry(record, error)) {
+          record.waitingForNetwork = false;
           record.retryAttempts++;
           final factor = 1 << (record.retryAttempts - 1);
           record.retryAt = DateTime.now().add(retryBaseDelay * factor);
           record.status = DownloadStatus.queued;
         } else {
           record.retryAt = null;
+          record.waitingForNetwork = false;
           record.status = DownloadStatus.failed;
         }
       }
@@ -563,6 +686,35 @@ class DownloadController extends ChangeNotifier {
     return false;
   }
 
+  bool _isConnectivityError(Object error) {
+    if (error is SocketException || error is TimeoutException) return true;
+    if (error is HttpException) {
+      final message = error.message.toLowerCase();
+      return message.contains('connection closed') ||
+          message.contains('connection reset');
+    }
+    return false;
+  }
+
+  Future<bool> _tryNextMirror(DownloadRecord record, Object error) async {
+    if (record.kind != DownloadKind.file &&
+        record.kind != DownloadKind.directVideo) return false;
+    if (record.activeMirrorIndex >= record.alternateUrls.length) return false;
+    if (record.downloadedBytes != 0 || record.segments.isNotEmpty) return false;
+    final partial = _partialFile(record);
+    if (await partial.exists() && await partial.length() != 0) return false;
+    final eligible = _isConnectivityError(error) ||
+        (error is HttpException && RegExp(r'\b(404|408|429|5\d\d)\b')
+            .hasMatch(error.message));
+    if (!eligible) return false;
+    record.activeMirrorIndex++;
+    // No bytes were written. Reset the original response's identity metadata.
+    record.totalBytes = null;
+    record.etag = null;
+    record.lastModified = null;
+    return true;
+  }
+
   Future<void> _download(DownloadRecord record) async {
     final part = _partialFile(record);
     await part.parent.create(recursive: true);
@@ -576,13 +728,13 @@ class DownloadController extends ChangeNotifier {
     }
     final existing = await part.exists() ? await part.length() : 0;
     if (record.segments.isNotEmpty || existing == 0) {
-      final probe = await SegmentedDownloader.probe(Uri.parse(record.url));
+      final probe = await SegmentedDownloader.probe(Uri.parse(record.activeUrl));
       if (record.status != DownloadStatus.downloading) return;
       if ((record.kind == DownloadKind.file ||
               record.kind == DownloadKind.directVideo) &&
           probe?.mimeType != null) {
         final detected = VideoSourceDetector.detect(
-          Uri.parse(record.url), mimeType: probe!.mimeType,
+          Uri.parse(record.activeUrl), mimeType: probe!.mimeType,
         );
         _setKind(record, detected);
         if (detected == DownloadKind.hls) {
@@ -680,7 +832,7 @@ class DownloadController extends ChangeNotifier {
       ..autoUncompress = false
       ..connectionTimeout = const Duration(seconds: 25);
     _clients[record.id] = client;
-    final request = await client.getUrl(Uri.parse(record.url));
+    final request = await client.getUrl(Uri.parse(record.activeUrl));
     request.followRedirects = true;
     request.maxRedirects = 6;
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
@@ -694,7 +846,7 @@ class DownloadController extends ChangeNotifier {
     final response = await request.close();
     if (response.statusCode != HttpStatus.ok &&
         response.statusCode != HttpStatus.partialContent) {
-      throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(record.url));
+      throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(record.activeUrl));
     }
     if (record.kind == DownloadKind.directVideo &&
         response.headers.contentType?.mimeType == 'text/html') {
@@ -703,7 +855,7 @@ class DownloadController extends ChangeNotifier {
     }
     if (existing == 0 && (record.kind == DownloadKind.file ||
         record.kind == DownloadKind.directVideo)) {
-      final kind = VideoSourceDetector.detect(Uri.parse(record.url),
+      final kind = VideoSourceDetector.detect(Uri.parse(record.activeUrl),
           mimeType: response.headers.contentType?.mimeType);
       if (kind != DownloadKind.file && kind != record.kind) {
         _setKind(record, kind);
@@ -805,7 +957,7 @@ class DownloadController extends ChangeNotifier {
       record.fileName = safeName(
           VideoSourceDetector.transportStreamName(record.fileName));
       record.savePath =
-          '${downloadDirectory.path}${Platform.pathSeparator}${record.fileName}';
+          '${File(record.savePath).parent.path}${Platform.pathSeparator}${record.fileName}';
     }
     notifyListeners();
   }
@@ -886,7 +1038,7 @@ class DownloadController extends ChangeNotifier {
     final stem = dot > 0 ? record.fileName.substring(0, dot) : record.fileName;
     record.fileName = safeName('$stem.mp4');
     record.savePath =
-        '${downloadDirectory.path}${Platform.pathSeparator}${record.fileName}';
+        '${File(record.savePath).parent.path}${Platform.pathSeparator}${record.fileName}';
     final part = _partialFile(record);
     if (previousPartial.path != part.path && await previousPartial.exists()) {
       await previousPartial.delete();
@@ -927,9 +1079,8 @@ class DownloadController extends ChangeNotifier {
         final suffix = dot > 0 ? record.fileName.substring(dot) : '';
         var index = 1;
         do {
-          destination = File(
-            '${downloadDirectory.path}${Platform.pathSeparator}$stem ($index)$suffix',
-          );
+          destination = File('${File(record.savePath).parent.path}'
+              '${Platform.pathSeparator}$stem ($index)$suffix');
           index++;
         } while (await destination.exists());
       }

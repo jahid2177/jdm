@@ -1,5 +1,5 @@
 JAHID DOWNLOAD MANAGER - WINDOWS BROWSER INTEGRATION
-Version 1.0.0 | Developer: Md Jahidul Islam
+Version 1.1.0 | Developer: Md Jahidul Islam
 
 The Windows installer includes the Chrome/Edge and Firefox extensions and
 the Windows native messaging host. For security, extension registration is

@@ -150,6 +150,7 @@ class DownloadHome extends StatefulWidget {
 
 class _DownloadHomeState extends State<DownloadHome> {
   DownloadFilter filter = DownloadFilter.all;
+  DownloadCategory? categoryFilter;
   String search = '';
   final Set<String> _busyFileActions = {};
 
@@ -165,6 +166,8 @@ class _DownloadHomeState extends State<DownloadHome> {
         fileName: input.name,
         quality: input.quality,
         scheduledAt: input.scheduledAt,
+        category: input.category,
+        alternateUrls: input.alternateUrls,
       );
     } catch (error) {
       if (!mounted) return;
@@ -197,6 +200,24 @@ class _DownloadHomeState extends State<DownloadHome> {
   }
 
   Future<void> _handle(DownloadRecord record, String action) async {
+    if (action == 'diagnostics') {
+      await _diagnostics(record);
+      return;
+    }
+    if (action.startsWith('category:')) {
+      final category = DownloadCategory.values.firstWhere(
+        (value) => value.name == action.substring('category:'.length),
+      );
+      try {
+        final moved = await widget.controller.changeCategory(record.id, category);
+        if (mounted) _message(moved
+            ? 'Moved to ${category.folder} category.'
+            : 'Pause or finish the current download before moving its folder.');
+      } catch (error) {
+        if (mounted) _message('Category move failed: $error');
+      }
+      return;
+    }
     if (action == 'open' || action == 'share' ||
         action == 'reveal' || action == 'export') {
       await _runFileAction(record, action);
@@ -234,6 +255,79 @@ class _DownloadHomeState extends State<DownloadHome> {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
+
+  Future<void> _diagnostics(DownloadRecord record) => showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Diagnostics: ${record.fileName}',
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                'Status: ${record.status.name}\n'
+                'Category: ${record.category.folder}\n'
+                'Downloaded: ${_bytes(record.downloadedBytes)}\n'
+                'Expected: ${_bytes(record.totalBytes)}\n'
+                'Connections: ${record.usedConnections}\n'
+                'Automatic retries: ${record.retryAttempts}\n'
+                'Offline checks: ${record.reconnectChecks}\n'
+                'Waiting for network: ${record.waitingForNetwork}\n'
+                'Original URL: ${record.url}\n'
+                'Active URL: ${record.activeUrl}\n'
+                'Mirror: ${record.activeMirrorIndex}/${record.alternateUrls.length}\n'
+                'Save path: ${record.savePath}\n'
+                'Next attempt: ${record.retryAt == null ? 'None' : _whenString(record.retryAt!)}\n'
+                'Last error: ${record.error ?? 'None'}',
+              ),
+            ),
+          ),
+          actions: [TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          )],
+        ),
+      );
+
+  Future<void> _statistics() => showDialog<void>(
+        context: context,
+        builder: (context) {
+          final all = widget.controller.downloads;
+          final completed = all.where((r) => r.status == DownloadStatus.completed);
+          final completedBytes = completed.fold<int>(
+              0, (sum, r) => sum + (r.totalBytes ?? r.downloadedBytes));
+          final waiting = all.where((r) => r.waitingForNetwork &&
+              r.status == DownloadStatus.queued).length;
+          return AlertDialog(
+            title: const Text('Download statistics'),
+            content: SizedBox(
+              width: 390,
+              child: SingleChildScrollView(child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Total: ${all.length}  •  Completed: ${completed.length}'),
+                  Text('Stored completed data: ${_bytes(completedBytes)}'),
+                  Text('Active: ${widget.controller.activeCount}  •  Waiting for network: $waiting'),
+                  Text('Failed: ${all.where((r) => r.status == DownloadStatus.failed).length}'),
+                  const Divider(height: 28),
+                  const Text('Downloads by category',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  for (final category in DownloadCategory.values)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Text('${category.folder}: ${all.where((r) => r.category == category).length}'),
+                    ),
+                ],
+              )),
+            ),
+            actions: [TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            )],
+          );
+        },
+      );
 
   Future<void> _runFileAction(DownloadRecord record, String action) async {
     if (!_busyFileActions.add(record.id)) return;
@@ -291,6 +385,10 @@ class _DownloadHomeState extends State<DownloadHome> {
   }
 
   Future<void> _historyAction(String action) async {
+    if (action == 'stats') {
+      await _statistics();
+      return;
+    }
     if (action == 'export') {
       try {
         final backup = widget.controller.exportHistoryJson();
@@ -388,6 +486,8 @@ class _DownloadHomeState extends State<DownloadHome> {
                     child: Text('Export history JSON')),
                 PopupMenuItem(value: 'restore',
                     child: Text('Restore history JSON')),
+                PopupMenuItem(value: 'stats',
+                    child: Text('Download statistics')),
               ],
             ),
             PopupMenuButton<String>(
@@ -431,6 +531,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             final all = widget.controller.downloads;
             final visible = all.where((record) {
               return filter.matches(record) &&
+                  (categoryFilter == null || record.category == categoryFilter) &&
                   (record.fileName.toLowerCase().contains(search.toLowerCase()) ||
                       record.url.toLowerCase().contains(search.toLowerCase()));
             }).toList();
@@ -447,7 +548,7 @@ class _DownloadHomeState extends State<DownloadHome> {
                           if (!isDesktop) _mobileFilters(),
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                            child: TextField(
+                            child: Row(children: [Expanded(child: TextField(
                               decoration: InputDecoration(
                                 prefixIcon: const Icon(Icons.search),
                                 hintText: 'Search downloads',
@@ -457,7 +558,31 @@ class _DownloadHomeState extends State<DownloadHome> {
                                 isDense: true,
                               ),
                               onChanged: (value) => setState(() => search = value),
-                            ),
+                            )),
+                            const SizedBox(width: 8),
+                            SizedBox(width: isDesktop ? 170 : 120,
+                              child: DropdownButtonFormField<DownloadCategory?>(
+                                initialValue: categoryFilter,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Category',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: [
+                                  const DropdownMenuItem<DownloadCategory?>(
+                                    value: null, child: Text('All')),
+                                  ...DownloadCategory.values.map((category) =>
+                                      DropdownMenuItem<DownloadCategory?>(
+                                        value: category,
+                                        child: Text(category.folder,
+                                            overflow: TextOverflow.ellipsis),
+                                      )),
+                                ],
+                                onChanged: (value) =>
+                                    setState(() => categoryFilter = value),
+                              ),
+                            )]),
                           ),
                           Expanded(
                             child: visible.isEmpty
@@ -501,7 +626,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 1.0.0 • Md Jahidul Islam',
+              child: Text('JDM 1.1.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -669,7 +794,9 @@ class _DownloadHomeState extends State<DownloadHome> {
                         style: const TextStyle(fontSize: 11)),
                   if (record.retryAt != null &&
                       record.status == DownloadStatus.queued)
-                    Text('Auto retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}: ${_whenString(record.retryAt!)}',
+                    Text(record.waitingForNetwork
+                        ? 'Offline: checking again ${_whenString(record.retryAt!)}'
+                        : 'Auto retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}: ${_whenString(record.retryAt!)}',
                         style: const TextStyle(fontSize: 11)),
                   if (record.error != null) ...[
                     const SizedBox(height: 6),
@@ -723,7 +850,9 @@ class _DownloadHomeState extends State<DownloadHome> {
   Widget _status(DownloadRecord record) {
     final (label, color) = switch (record.status) {
       DownloadStatus.queued => (
-        record.retryAt?.isAfter(DateTime.now()) == true
+        record.waitingForNetwork
+            ? 'Waiting for network'
+            : record.retryAt?.isAfter(DateTime.now()) == true
             ? 'Retry ${record.retryAttempts}/${widget.controller.maxAutomaticRetries}'
             : record.scheduledAt?.isAfter(DateTime.now()) == true
                 ? 'Scheduled' : 'Queued',
@@ -772,6 +901,13 @@ class _DownloadHomeState extends State<DownloadHome> {
             const PopupMenuItem(value: 'later', child: Text('Move later in queue')),
           ],
           const PopupMenuItem(value: 'path', child: Text('Show file path')),
+          const PopupMenuItem(value: 'diagnostics', child: Text('Diagnostics')),
+          const PopupMenuDivider(),
+          if (record.status != DownloadStatus.downloading)
+            for (final category in DownloadCategory.values)
+              if (record.category != category)
+                PopupMenuItem(value: 'category:${category.name}',
+                    child: Text('Move to ${category.folder}')),
           const PopupMenuItem(value: 'copyUrl', child: Text('Copy download URL')),
           const PopupMenuItem(value: 'remove', child: Text('Remove from list')),
         ],
@@ -810,6 +946,7 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
   late int _limit;
   late int _concurrent;
   late int _retries;
+  late bool _reconnectEnabled;
   bool _changingBackground = false;
   bool _changingCompletionPreference = false;
   String? _backgroundFeedback;
@@ -821,6 +958,7 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     _limit = widget.controller.speedLimitKibPerSecond;
     _concurrent = widget.controller.maxSimultaneous;
     _retries = widget.controller.maxAutomaticRetries;
+    _reconnectEnabled = widget.controller.autoResumeOnReconnectEnabled;
   }
 
   Future<void> _toggleAndroidBackground(bool enabled) async {
@@ -956,6 +1094,18 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                   'HTTP 408/429 and HTTP 5xx with increasing delays. '
                   'Other errors stop; manual Resume / Retry remains available.',
                   style: TextStyle(fontSize: 12)),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Auto resume after reconnect'),
+                subtitle: const Text('When the source cannot be reached, '
+                    'JDM checks again with increasing delays (up to 60 s). '
+                    'Requires the app process to remain running.'),
+                value: _reconnectEnabled,
+                onChanged: (enabled) async {
+                  setState(() => _reconnectEnabled = enabled);
+                  await widget.controller.setAutoResumeOnReconnect(enabled);
+                },
+              ),
               if (widget.background != null) ...[
                 const SizedBox(height: 16),
                 SwitchListTile.adaptive(
@@ -1039,11 +1189,14 @@ String _bytes(int? size) {
 }
 
 class _DownloadInput {
-  const _DownloadInput(this.url, this.name, this.quality, this.scheduledAt);
+  const _DownloadInput(this.url, this.name, this.quality, this.scheduledAt,
+      this.category, this.alternateUrls);
   final String url;
   final String name;
   final VideoQuality quality;
   final DateTime? scheduledAt;
+  final DownloadCategory? category;
+  final List<String> alternateUrls;
 }
 
 String _whenString(DateTime value) {
@@ -1064,7 +1217,9 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
   final _form = GlobalKey<FormState>();
   final _url = TextEditingController();
   final _name = TextEditingController();
+  final _mirrors = TextEditingController();
   VideoQuality _quality = VideoQuality.highest;
+  DownloadCategory? _category;
   DateTime? _scheduledAt;
 
   Future<void> _pickSchedule() async {
@@ -1098,6 +1253,7 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
   void dispose() {
     _url.dispose();
     _name.dispose();
+    _mirrors.dispose();
     super.dispose();
   }
 
@@ -1135,6 +1291,52 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
                     prefixIcon: Icon(Icons.drive_file_rename_outline),
                   ),
                 ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<DownloadCategory?>(
+                  initialValue: _category,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Download category / folder',
+                    prefixIcon: Icon(Icons.folder_outlined),
+                  ),
+                  items: [
+                    const DropdownMenuItem<DownloadCategory?>(
+                      value: null, child: Text('Automatic by file type')),
+                    ...DownloadCategory.values.map((category) =>
+                        DropdownMenuItem<DownloadCategory?>(
+                          value: category, child: Text(category.folder),
+                        )),
+                  ],
+                  onChanged: (category) => setState(() => _category = category),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _mirrors,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Alternate URLs / Mirrors (optional)',
+                    hintText: 'One direct HTTP(S) URL per line (max 5)',
+                    prefixIcon: Icon(Icons.alt_route_outlined),
+                  ),
+                  validator: (text) {
+                    final urls = (text ?? '').split(RegExp(r'[\r\n]+'))
+                        .map((value) => value.trim())
+                        .where((value) => value.isNotEmpty).toList();
+                    if (urls.length > 5) return 'Use at most 5 mirrors';
+                    if (urls.any((value) {
+                      final uri = Uri.tryParse(value);
+                      return uri == null || !{'http', 'https'}.contains(uri.scheme) ||
+                          uri.host.isEmpty || uri.userInfo.isNotEmpty;
+                    })) return 'Every mirror needs a valid HTTP(S) URL';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 6),
+                const Text('JDM switches mirrors only before any data is '
+                    'written, so partial files are never mixed between sources. '
+                    'Mirrors are for direct files/videos, not HLS or DASH.',
+                    style: TextStyle(fontSize: 11)),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<VideoQuality>(
                   initialValue: _quality,
@@ -1187,7 +1389,12 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
             onPressed: () {
               if (_form.currentState!.validate()) {
                 Navigator.pop(context, _DownloadInput(
-                  _url.text, _name.text, _quality, _scheduledAt));
+                  _url.text, _name.text, _quality, _scheduledAt,
+                  _category,
+                  _mirrors.text.split(RegExp(r'[\r\n]+'))
+                      .map((value) => value.trim())
+                      .where((value) => value.isNotEmpty).toList(),
+                ));
               }
             },
             icon: const Icon(Icons.download),

@@ -29,6 +29,7 @@ class DownloadHistoryBackup {
             'createdAt': record.createdAt.toUtc().toIso8601String(),
             'originalStatus': record.status.name,
             'kind': record.kind.name,
+            'category': record.category.name,
             'quality': record.videoQuality.name,
             'totalBytes': record.totalBytes,
           },
@@ -69,18 +70,24 @@ class DownloadHistoryBackup {
       if (length != null && (length is! int || length < 0)) {
         throw const FormatException('A backup entry has an invalid size.');
       }
+      final kind = DownloadKind.values.firstWhere(
+        (value) => value.name == item['kind'],
+        orElse: () => DownloadKind.file,
+      );
       entries.add(HistoryEntry(
         url: uri.toString(),
         fileName: item['fileName'] as String,
         createdAt: date,
         totalBytes: length as int?,
-        kind: DownloadKind.values.firstWhere(
-          (value) => value.name == item['kind'],
-          orElse: () => DownloadKind.file,
-        ),
+        kind: kind,
         quality: VideoQuality.values.firstWhere(
           (value) => value.name == item['quality'],
           orElse: () => VideoQuality.highest,
+        ),
+        category: DownloadCategory.values.firstWhere(
+          (value) => value.name == item['category'],
+          orElse: () => DownloadCategoryDetails.infer(
+              item['fileName'] as String, kind),
         ),
       ));
     }
@@ -96,6 +103,7 @@ class HistoryEntry {
     required this.totalBytes,
     required this.kind,
     required this.quality,
+    required this.category,
   });
 
   final String url;
@@ -104,6 +112,7 @@ class HistoryEntry {
   final int? totalBytes;
   final DownloadKind kind;
   final VideoQuality quality;
+  final DownloadCategory category;
 }
 
 class HistoryRestoreResult {

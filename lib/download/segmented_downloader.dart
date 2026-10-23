@@ -132,7 +132,7 @@ class SegmentedDownloader {
     if (!isDownloading() || segment.complete) return;
     final file = segmentFile(record, segment);
     final start = segment.start + segment.downloadedBytes;
-    final request = await client.getUrl(Uri.parse(record.url));
+    final request = await client.getUrl(Uri.parse(record.activeUrl));
     request.followRedirects = true;
     request.maxRedirects = 6;
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');

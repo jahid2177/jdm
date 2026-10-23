@@ -2,6 +2,38 @@ enum DownloadStatus { queued, downloading, paused, completed, failed }
 enum DownloadKind { file, directVideo, hls, dash }
 enum VideoQuality { highest, balanced, lowest }
 
+enum DownloadCategory { general, videos, documents, music, archives, other }
+
+extension DownloadCategoryDetails on DownloadCategory {
+  String get folder => switch (this) {
+        DownloadCategory.general => 'General',
+        DownloadCategory.videos => 'Videos',
+        DownloadCategory.documents => 'Documents',
+        DownloadCategory.music => 'Music',
+        DownloadCategory.archives => 'Archives',
+        DownloadCategory.other => 'Other',
+      };
+
+  static DownloadCategory infer(String fileName, DownloadKind kind) {
+    if (kind != DownloadKind.file) return DownloadCategory.videos;
+    final dot = fileName.lastIndexOf('.');
+    final extension = dot < 0 ? '' : fileName.substring(dot + 1).toLowerCase();
+    if (['mp4', 'mkv', 'mov', 'avi', 'webm', 'm3u8', 'ts'].contains(extension)) {
+      return DownloadCategory.videos;
+    }
+    if (['pdf', 'doc', 'docx', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].contains(extension)) {
+      return DownloadCategory.documents;
+    }
+    if (['mp3', 'm4a', 'flac', 'wav', 'aac'].contains(extension)) {
+      return DownloadCategory.music;
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz'].contains(extension)) {
+      return DownloadCategory.archives;
+    }
+    return DownloadCategory.general;
+  }
+}
+
 class DownloadSegment {
   DownloadSegment({
     required this.index,
@@ -58,8 +90,13 @@ class DownloadRecord {
     this.androidExportError,
     this.retryAttempts = 0,
     this.retryAt,
+    this.category = DownloadCategory.general,
+    List<String>? alternateUrls,
+    this.activeMirrorIndex = 0,
+    this.waitingForNetwork = false,
+    this.reconnectChecks = 0,
     List<DownloadSegment>? segments,
-  }) : segments = segments ?? [];
+  }) : alternateUrls = alternateUrls ?? [], segments = segments ?? [];
 
   final String id;
   final String url;
@@ -84,8 +121,18 @@ class DownloadRecord {
   String? androidExportError;
   int retryAttempts;
   DateTime? retryAt;
+  DownloadCategory category;
+  final List<String> alternateUrls;
+  int activeMirrorIndex;
+  bool waitingForNetwork;
+  int reconnectChecks;
   final List<DownloadSegment> segments;
   double bytesPerSecond = 0;
+
+  String get activeUrl => activeMirrorIndex > 0 &&
+          activeMirrorIndex <= alternateUrls.length
+      ? alternateUrls[activeMirrorIndex - 1]
+      : url;
 
   double? get fraction {
     if (kind == DownloadKind.hls && hlsTotalSegments > 0) {
@@ -120,6 +167,11 @@ class DownloadRecord {
         'androidExportError': androidExportError,
         'retryAttempts': retryAttempts,
         'retryAt': retryAt?.toIso8601String(),
+        'category': category.name,
+        'alternateUrls': alternateUrls,
+        'activeMirrorIndex': activeMirrorIndex,
+        'waitingForNetwork': waitingForNetwork,
+        'reconnectChecks': reconnectChecks,
         'segments': segments.map((s) => s.toJson()).toList(),
       };
 
@@ -162,6 +214,18 @@ class DownloadRecord {
         retryAt: json['retryAt'] is String
             ? DateTime.tryParse(json['retryAt'] as String)
             : null,
+        category: DownloadCategory.values.firstWhere(
+          (value) => value.name == json['category'],
+          orElse: () => DownloadCategory.general,
+        ),
+        alternateUrls: (json['alternateUrls'] is List)
+            ? (json['alternateUrls'] as List).whereType<String>().toList()
+            : <String>[],
+        activeMirrorIndex: ((json['activeMirrorIndex'] as num?)?.toInt() ?? 0)
+            .clamp(0, 10).toInt(),
+        waitingForNetwork: json['waitingForNetwork'] == true,
+        reconnectChecks: ((json['reconnectChecks'] as num?)?.toInt() ?? 0)
+            .clamp(0, 100).toInt(),
         segments: (json['segments'] as List<dynamic>? ?? [])
             .map((value) => DownloadSegment.fromJson(
                 Map<String, dynamic>.from(value as Map)))

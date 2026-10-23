@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 10 (v1.0.0)**, a cross-platform HTTP(S)
+This repository contains **Milestone 11 (v1.1.0)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -292,6 +292,46 @@ is necessary after a new completed task while the JDM process remains alive.
 Android ARM64 APK, Windows ZIP and `JDM-Setup-v1.0.0-Windows-x64.exe`.
 Host-side Flutter/Dart build verification is still needed on an SDK-equipped
 machine; Windows/Android runtime behavior has not been claimed device-tested.
+
+## New in Milestone 11 — mirrors, reconnect, category folders and diagnostics
+
+- **User-supplied alternate mirrors:** In Add Download, provide up to five
+  HTTP(S) URLs, one per line. If a direct file/video URL fails with a
+  connection error, timeout, HTTP 404/408/429 or HTTP 5xx, JDM can try the
+  next mirror. It switches **only when there are zero downloaded bytes and
+  no saved segments/partial content**. JDM never combines bytes from two
+  servers without validating them. Mirror order and active URL are persisted.
+  HLS/DASH URLs do not support mirror switching in this milestone.
+- **Reconnect recovery:** When socket connectivity fails, JDM can wait and
+  try the same source again at increasing intervals (5, 10, 20, 40, up to
+  60 seconds). Toggle **Auto resume after reconnect** under Settings.
+  The waiting state and number of checks survive app relaunches. Disabling
+  the preference stops pending network-wait tasks; manual Retry still works.
+  Reconnect checks only run while the app process is alive and allowed to run
+  timers; Android background restrictions still apply.
+- **Managed category folders:** New downloads go to a `JDM/<Category>`
+  subfolder beneath JDM's download root. Automatic categories include Videos,
+  Documents, Music, Archives and General; you can override from Add Download.
+  The search bar also has a category filter. Every non-active task offers
+  **Move to <Category>**; a completed file is moved to the chosen folder
+  without replacing an existing file, while untouched queued/paused tasks
+  can update their future destination. Active downloads and partially saved
+  transfers cannot move folders until safe. Older saved paths are preserved.
+- **Statistics and diagnostics:** Use History → Download statistics to view
+  total/completed/failed/active/offline counts, stored completed bytes and
+  per-category counts. Use an item's **Diagnostics** action for source URL,
+  current mirror, retry count, offline checks, active progress, last error and
+  destination path. URL-bearing diagnostics can contain private tokens.
+- Versioned JSON history backups now include categories while retaining
+  compatibility with previous v1 history backups lacking a category field.
+- Added tests for mirror failover, refusal to mix partial content, invalid
+  mirror URLs, connectivity restoration, disabling reconnect, category moves,
+  filename collision handling and persisted mirror/settings metadata.
+
+**Important:** Mirror URLs must point to the same intended file; JDM does not
+perform cryptographic content equality checks between different hosts. It
+avoids mixing bytes by switching only before any data is saved. The Windows
+installer for this milestone is `JDM-Setup-v1.1.0-Windows-x64.exe`.
 
 ### Browser extension setup on Windows
 
