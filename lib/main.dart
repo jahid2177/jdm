@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 
 import 'download/download_controller.dart';
 import 'download/download_record.dart';
+import 'integration/android_background_keeper.dart';
 import 'integration/browser_bridge_server.dart';
+import 'integration/windows_tray_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,13 +21,30 @@ Future<void> main() async {
       debugPrint('Could not start browser bridge: $error');
     }
   }
-  runApp(JdmApp(controller: controller, bridge: bridge));
+  final tray = await WindowsTrayController.attach(controller, bridge);
+  final background = Platform.isAndroid
+      ? AndroidBackgroundKeeper(controller)
+      : null;
+  runApp(JdmApp(
+    controller: controller,
+    bridge: bridge,
+    tray: tray,
+    background: background,
+  ));
 }
 
 class JdmApp extends StatefulWidget {
-  const JdmApp({super.key, required this.controller, this.bridge});
+  const JdmApp({
+    super.key,
+    required this.controller,
+    this.bridge,
+    this.tray,
+    this.background,
+  });
   final DownloadController controller;
   final BrowserBridgeServer? bridge;
+  final WindowsTrayController? tray;
+  final AndroidBackgroundKeeper? background;
 
   @override
   State<JdmApp> createState() => _JdmAppState();
@@ -36,7 +55,12 @@ class _JdmAppState extends State<JdmApp> {
 
   @override
   void dispose() {
-    if (widget.bridge != null) unawaited(widget.bridge!.close());
+    // Closing the Windows window does not dispose this widget; it only hides
+    // the window. The tray's explicit Exit closes the browser bridge.
+    if (widget.tray == null && widget.bridge != null) {
+      unawaited(widget.bridge!.close());
+    }
+    widget.background?.dispose();
     super.dispose();
   }
 
@@ -59,6 +83,7 @@ class _JdmAppState extends State<JdmApp> {
         ),
         home: DownloadHome(
           controller: widget.controller,
+          background: widget.background,
           onToggleTheme: () => setState(() {
             mode = mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
           }),
@@ -96,9 +121,11 @@ class DownloadHome extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onToggleTheme,
+    this.background,
   });
   final DownloadController controller;
   final VoidCallback onToggleTheme;
+  final AndroidBackgroundKeeper? background;
 
   @override
   State<DownloadHome> createState() => _DownloadHomeState();
@@ -189,7 +216,10 @@ class _DownloadHomeState extends State<DownloadHome> {
   Future<void> _settings() async {
     await showDialog<void>(
       context: context,
-      builder: (_) => _QueueSettingsDialog(controller: widget.controller),
+      builder: (_) => _QueueSettingsDialog(
+        controller: widget.controller,
+        background: widget.background,
+      ),
     );
   }
 
@@ -316,7 +346,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.6.0 • Md Jahidul Islam',
+              child: Text('JDM 0.7.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -573,9 +603,10 @@ class _DownloadHomeState extends State<DownloadHome> {
 }
 
 class _QueueSettingsDialog extends StatefulWidget {
-  const _QueueSettingsDialog({required this.controller});
+  const _QueueSettingsDialog({required this.controller, this.background});
 
   final DownloadController controller;
+  final AndroidBackgroundKeeper? background;
 
   @override
   State<_QueueSettingsDialog> createState() => _QueueSettingsDialogState();
@@ -584,6 +615,8 @@ class _QueueSettingsDialog extends StatefulWidget {
 class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
   late int _limit;
   late int _concurrent;
+  bool _changingBackground = false;
+  String? _backgroundFeedback;
 
   @override
   void initState() {
@@ -592,12 +625,34 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
     _concurrent = widget.controller.maxSimultaneous;
   }
 
+  Future<void> _toggleAndroidBackground(bool enabled) async {
+    final background = widget.background;
+    if (background == null) return;
+    setState(() {
+      _changingBackground = true;
+      _backgroundFeedback = null;
+    });
+    try {
+      final success = await background.changeEnabled(enabled);
+      if (!mounted) return;
+      setState(() {
+        _backgroundFeedback = success
+            ? enabled
+                ? 'Background service will run only during active downloads.'
+                : 'Background service disabled.'
+            : background.error ?? 'Background service was not enabled.';
+      });
+    } finally {
+      if (mounted) setState(() => _changingBackground = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AlertDialog(
         title: const Text('Speed and queue settings'),
         content: SizedBox(
           width: 400,
-          child: Column(
+          child: SingleChildScrollView(child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -634,8 +689,29 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                   'downloads, including segmented connections. External '
                   'FFmpeg transfers are not throttled.',
                   style: TextStyle(fontSize: 12)),
+              if (widget.background != null) ...[
+                const SizedBox(height: 16),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Keep downloading in background'),
+                  subtitle: const Text('Android: show a persistent download '
+                      'notification and request system permissions. '
+                      'Stops when no downloads are active.'),
+                  value: widget.controller.androidBackgroundEnabled,
+                  onChanged: _changingBackground ? null : _toggleAndroidBackground,
+                ),
+                if (_changingBackground) const LinearProgressIndicator(),
+                if (_backgroundFeedback != null)
+                  Text(_backgroundFeedback!,
+                      style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 8),
+                const Text('Android may stop this service due to battery '
+                    'restrictions, its dataSync time limit, or force-stop. '
+                    'Scheduled downloads are not guaranteed while JDM is '
+                    'closed.', style: TextStyle(fontSize: 12)),
+              ],
             ],
-          ),
+          )),
         ),
         actions: [
           TextButton(

@@ -98,6 +98,7 @@ void main() {
     await controller.setQueuePaused(true);
     await controller.setMaximumActiveDownloads(2);
     await controller.setSpeedLimitKibPerSecond(256);
+    await controller.setAndroidBackgroundEnabled(true);
     controller.dispose();
     controller = DownloadController.forTesting(
       Directory('${temporary.path}/state'),
@@ -107,6 +108,7 @@ void main() {
     expect(controller.queuePaused, true);
     expect(controller.maxSimultaneous, 2);
     expect(controller.speedLimitKibPerSecond, 256);
+    expect(controller.androidBackgroundEnabled, true);
   });
 
   test('global token bucket actually waits when rate is exceeded', () async {

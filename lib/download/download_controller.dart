@@ -71,10 +71,12 @@ class DownloadController extends ChangeNotifier {
   int _sequence = 0;
   int maxSimultaneous = 3;
   bool _queuePaused = false;
+  bool _androidBackgroundEnabled = false;
 
   List<DownloadRecord> get downloads => List.unmodifiable(_records);
   int get activeCount => _activeIds.length;
   bool get queuePaused => _queuePaused;
+  bool get androidBackgroundEnabled => _androidBackgroundEnabled;
   int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
 
   List<DownloadRecord> get queuedInPriorityOrder => List.unmodifiable(
@@ -206,6 +208,12 @@ class DownloadController extends ChangeNotifier {
     _pump();
   }
 
+  Future<void> setAndroidBackgroundEnabled(bool enabled) async {
+    _androidBackgroundEnabled = enabled;
+    notifyListeners();
+    await _saveSettings();
+  }
+
   Future<void> pauseAll() async {
     _queuePaused = true;
     for (final record in _records) {
@@ -276,6 +284,7 @@ class DownloadController extends ChangeNotifier {
       maxSimultaneous = ((settings['maxSimultaneous'] as num?)?.toInt() ?? 3)
           .clamp(1, 5).toInt();
       _queuePaused = settings['queuePaused'] == true;
+      _androidBackgroundEnabled = settings['androidBackgroundEnabled'] == true;
     } catch (_) {
       // If settings are corrupt, retain safe defaults without losing tasks.
     }
@@ -286,6 +295,7 @@ class DownloadController extends ChangeNotifier {
       'speedLimitKibPerSecond': speedLimitKibPerSecond,
       'maxSimultaneous': maxSimultaneous,
       'queuePaused': _queuePaused,
+      'androidBackgroundEnabled': _androidBackgroundEnabled,
     });
     _pendingSettingsSave = _pendingSettingsSave.catchError((Object _) {})
         .then((_) async {

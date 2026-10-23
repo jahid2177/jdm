@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 6**, a cross-platform HTTP(S)
+This repository contains **Milestone 7**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -137,10 +137,39 @@ capable of reading MPEG Transport Streams.
 - Added fixture tests for queue holding/reordering, Pause All/Resume All,
   persisted settings, and actual token-bucket throttling.
 
-**Still pending:** Windows system-tray/minimize support and reliable Android
-background downloading/notifications require native lifecycle integration.
-Keeping JDM open is still required for this milestone's scheduler and active
-downloads. Do not rely on it for downloads after Android terminates the app.
+## New in Milestone 7 — Windows tray and Android background downloading
+
+- On Windows, the JDM icon appears in the **system tray**. Closing its main
+  window hides the window without stopping ongoing transfers or the browser
+  integration bridge. Left-click the tray icon or choose **Open JDM** to restore.
+- Windows tray actions: **Pause all downloads**, **Resume all paused**, and
+  **Exit JDM**. Exit pauses/waits for active writers, saves state, closes the
+  browser bridge, removes the tray icon and exits the application. Windows
+  tray setup failure falls back to a normally closable window.
+- On Android, **Speed and queue settings** now offers the opt-in **Keep
+  downloading in background** switch. Enabling it asks the Android system for
+  required foreground/background permissions and can ask to exempt JDM from
+  battery optimization. Permission refusal leaves the feature off.
+- While enabled and there is an active download, a visible **dataSync**
+  foreground-service notification stays active. The service uses the same
+  downloader/Flutter isolate, and releases its wake and Wi-Fi locks after the
+  last active transfer. Queued-only, paused and completed states do not start
+  the service. The user's preference survives an application restart.
+- **Limits:** Foreground execution improves reliability when the user
+  switches apps or turns the screen off, but is **not** an independent Android
+  job engine and does not survive force-stop or process termination. Android
+  15+ targets have a six-hour dataSync foreground-service allowance per
+  24-hour period while backgrounded (subject to system reset rules). Android
+  battery policy and OEM restrictions may terminate the service earlier.
+- Download schedules still do not run after JDM exits or Android kills it;
+  scheduled-only jobs do not keep a permanent foreground service running.
+- Added a unit test of the foreground eligibility policy and a persisted
+  background-download preference assertion.
+
+**Build/test status:** Source and CI are provided, but Windows/Android
+native builds must be run in the GitHub Actions workflow or an SDK-equipped
+machine. Neither platform's system behavior is asserted as device-tested in
+this source release.
 
 ### Browser extension setup on Windows
 
@@ -211,9 +240,10 @@ This is **not the full IDM-equivalent app**. The following are planned:
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
 - Android-compatible licensed media muxer and advanced live capture.
-- Scheduler execution while JDM is closed, site grabber,
-  persistent Windows background service and tray integration.
-- Native Windows installer, background Android service and notifications.
+- Scheduler execution while JDM is closed, site grabber and a persistent
+  Windows background *service* independent of the running tray application.
+- Native Windows installer; Android background job restart after process death,
+  persistent progress/complete notifications and platform download folder export.
 - Per-server retry policies, checksums and advanced test coverage.
 
 ## How to run locally
