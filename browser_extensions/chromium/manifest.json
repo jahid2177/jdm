@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Download with JDM",
+  "version": "0.3.0",
+  "description": "Send selected HTTP(S) links to the running Jahid Download Manager for Windows.",
+  "permissions": ["contextMenus", "nativeMessaging", "storage", "activeTab"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Download with JDM", "default_popup": "popup.html"}
+}

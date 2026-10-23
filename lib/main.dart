@@ -1,17 +1,31 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'download/download_controller.dart';
 import 'download/download_record.dart';
+import 'integration/browser_bridge_server.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final controller = await DownloadController.create();
-  runApp(JdmApp(controller: controller));
+  BrowserBridgeServer? bridge;
+  if (Platform.isWindows) {
+    try {
+      bridge = await BrowserBridgeServer.start(controller);
+    } catch (error) {
+      // A failed browser bridge must never prevent normal downloads.
+      debugPrint('Could not start browser bridge: $error');
+    }
+  }
+  runApp(JdmApp(controller: controller, bridge: bridge));
 }
 
 class JdmApp extends StatefulWidget {
-  const JdmApp({super.key, required this.controller});
+  const JdmApp({super.key, required this.controller, this.bridge});
   final DownloadController controller;
+  final BrowserBridgeServer? bridge;
 
   @override
   State<JdmApp> createState() => _JdmAppState();
@@ -19,6 +33,12 @@ class JdmApp extends StatefulWidget {
 
 class _JdmAppState extends State<JdmApp> {
   ThemeMode mode = ThemeMode.system;
+
+  @override
+  void dispose() {
+    if (widget.bridge != null) unawaited(widget.bridge!.close());
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -248,7 +268,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.2.0 • Md Jahidul Islam',
+              child: Text('JDM 0.3.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
