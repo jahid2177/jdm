@@ -13,6 +13,23 @@ import '../video/hls_vod_downloader.dart';
 import '../video/ffmpeg_muxer.dart';
 import '../video/video_source_detector.dart';
 
+/// A URL already exists in the list. Callers can ask for confirmation before
+/// explicitly using [allowDuplicate] to create a second copy.
+class DuplicateDownloadException implements Exception {
+  const DuplicateDownloadException(this.existing);
+  final DownloadRecord existing;
+
+  @override
+  String toString() => 'This URL already exists as "${existing.fileName}" '
+      '(${existing.status.name}).';
+}
+
+class DownloadSpeedSample {
+  const DownloadSpeedSample(this.recordedAt, this.bytesPerSecond);
+  final DateTime recordedAt;
+  final double bytesPerSecond;
+}
+
 /// Streaming HTTP(S) downloader shared by Windows and Android.
 /// Uses verified byte ranges when available and a single stream otherwise.
 class DownloadController extends ChangeNotifier {
@@ -24,6 +41,7 @@ class DownloadController extends ChangeNotifier {
     this.ffmpegExecutable,
     this.retryBaseDelay = const Duration(seconds: 2),
     this.reconnectBaseDelay = const Duration(seconds: 5),
+    this.speedSampleInterval = const Duration(seconds: 1),
   });
 
   factory DownloadController.forTesting(
@@ -34,6 +52,7 @@ class DownloadController extends ChangeNotifier {
     String? ffmpegExecutable,
     Duration retryBaseDelay = const Duration(seconds: 2),
     Duration reconnectBaseDelay = const Duration(seconds: 5),
+    Duration speedSampleInterval = const Duration(seconds: 1),
   ) => DownloadController._(
         stateDirectory,
         downloadDirectory,
@@ -42,6 +61,7 @@ class DownloadController extends ChangeNotifier {
         ffmpegExecutable: ffmpegExecutable,
         retryBaseDelay: retryBaseDelay,
         reconnectBaseDelay: reconnectBaseDelay,
+        speedSampleInterval: speedSampleInterval,
       );
 
   static Future<DownloadController> create() async {
@@ -71,12 +91,16 @@ class DownloadController extends ChangeNotifier {
   final String? ffmpegExecutable;
   final Duration retryBaseDelay;
   final Duration reconnectBaseDelay;
+  final Duration speedSampleInterval;
   final List<DownloadRecord> _records = [];
   final Map<String, HttpClient> _clients = {};
   final Map<String, Process> _processes = {};
   final Set<String> _activeIds = {};
   final DownloadRateLimiter _rateLimiter = DownloadRateLimiter();
   Timer? _scheduleTimer;
+  Timer? _speedTimer;
+  final List<DownloadSpeedSample> _speedHistory = [];
+  final Map<String, int> _lastSampledBytes = {};
   Future<void> _pendingSave = Future.value();
   Future<void> _pendingSettingsSave = Future.value();
   Future<void> _finalizeBarrier = Future.value();
@@ -98,6 +122,10 @@ class DownloadController extends ChangeNotifier {
       _androidCompletionNotificationsEnabled;
   int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
   bool get autoResumeOnReconnectEnabled => _autoResumeOnReconnectEnabled;
+  List<DownloadSpeedSample> get speedHistory =>
+      List.unmodifiable(_speedHistory);
+  double get latestSpeedBytesPerSecond =>
+      _speedHistory.isEmpty ? 0 : _speedHistory.last.bytesPerSecond;
 
   String categoryDirectoryPath(DownloadCategory category) =>
       '${downloadDirectory.path}${Platform.pathSeparator}JDM'
@@ -192,7 +220,30 @@ class DownloadController extends ChangeNotifier {
       }
     }
     notifyListeners();
+    _speedTimer ??= Timer.periodic(speedSampleInterval, (_) => _sampleSpeed());
     _pump();
+  }
+
+  void _sampleSpeed() {
+    final previousSpeed = latestSpeedBytesPerSecond;
+    final next = <String, int>{};
+    var bytes = 0;
+    for (final record in _records) {
+      if (record.status != DownloadStatus.downloading) continue;
+      final previous = _lastSampledBytes[record.id];
+      if (previous != null && record.downloadedBytes >= previous) {
+        bytes += record.downloadedBytes - previous;
+      }
+      next[record.id] = record.downloadedBytes;
+    }
+    _lastSampledBytes
+      ..clear()
+      ..addAll(next);
+    final elapsed = speedSampleInterval.inMicroseconds / 1000000;
+    _speedHistory.add(DownloadSpeedSample(
+        DateTime.now(), elapsed <= 0 ? 0.0 : bytes / elapsed));
+    if (_speedHistory.length > 60) _speedHistory.removeAt(0);
+    if (next.isNotEmpty || previousSpeed > 0) notifyListeners();
   }
 
   static String safeName(String value) {
@@ -215,11 +266,23 @@ class DownloadController extends ChangeNotifier {
     DateTime? scheduledAt,
     DownloadCategory? category,
     List<String> alternateUrls = const [],
+    bool allowDuplicate = false,
   }) async {
     final uri = Uri.tryParse(input.trim());
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty || uri.userInfo.isNotEmpty) {
       throw const FormatException('Enter a valid HTTP or HTTPS URL.');
+    }
+    if (!allowDuplicate) {
+      // URL fragments are client-side anchors, not part of the HTTP request.
+      final resourceKey = uri.replace(fragment: '').toString();
+      for (final existing in _records) {
+        final oldUri = Uri.tryParse(existing.url);
+        if (oldUri != null &&
+            oldUri.replace(fragment: '').toString() == resourceKey) {
+          throw DuplicateDownloadException(existing);
+        }
+      }
     }
     final inferred = uri.pathSegments.isEmpty || uri.pathSegments.last.isEmpty
         ? 'download'
@@ -447,6 +510,52 @@ class DownloadController extends ChangeNotifier {
   Future<bool> moveEarlier(String id) => _reorderQueued(id, towardFront: true);
 
   Future<bool> moveLater(String id) => _reorderQueued(id, towardFront: false);
+
+  Future<bool> moveToFront(String id) => _moveQueuedToEdge(id, first: true);
+
+  Future<bool> moveToBack(String id) => _moveQueuedToEdge(id, first: false);
+
+  Future<bool> _moveQueuedToEdge(String id, {required bool first}) async {
+    final record = _find(id);
+    if (record == null || record.status != DownloadStatus.queued) return false;
+    final position = _records.indexOf(record);
+    // The first queued job in _records.reversed runs first.
+    final queued = [
+      for (var index = 0; index < _records.length; index++)
+        if (_records[index].status == DownloadStatus.queued) index,
+    ];
+    if (queued.isEmpty) return false;
+    final destination = first ? queued.last : queued.first;
+    if (position == destination) return true;
+    _records.removeAt(position);
+    _records.insert(destination, record);
+    notifyListeners();
+    await _save();
+    _pump();
+    return true;
+  }
+
+  /// Retry failed downloads as a batch, retaining existing partial bytes and
+  /// schedules, without re-adding duplicate records.
+  Future<int> retryAllFailed() async {
+    var count = 0;
+    for (final record in _records) {
+      if (record.status != DownloadStatus.failed) continue;
+      record.status = DownloadStatus.queued;
+      record.error = null;
+      record.retryAt = null;
+      record.retryAttempts = 0;
+      record.waitingForNetwork = false;
+      record.reconnectChecks = 0;
+      count++;
+    }
+    if (count > 0) {
+      notifyListeners();
+      await _save();
+      _pump();
+    }
+    return count;
+  }
 
   Future<bool> _reorderQueued(String id, {required bool towardFront}) async {
     final position = _records.indexWhere((record) => record.id == id &&
@@ -1117,6 +1226,7 @@ class DownloadController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _speedTimer?.cancel();
     _scheduleTimer?.cancel();
     for (final client in _clients.values) {
       client.close(force: true);

@@ -14,6 +14,7 @@ import 'integration/android_background_keeper.dart';
 import 'integration/android_completion_coordinator.dart';
 import 'integration/browser_bridge_server.dart';
 import 'integration/completed_file_actions.dart';
+import 'integration/download_alert_tracker.dart';
 import 'integration/windows_tray_controller.dart';
 
 Future<void> main() async {
@@ -153,6 +154,32 @@ class _DownloadHomeState extends State<DownloadHome> {
   DownloadCategory? categoryFilter;
   String search = '';
   final Set<String> _busyFileActions = {};
+  late final DownloadAlertTracker _alertTracker;
+
+  @override
+  void initState() {
+    super.initState();
+    _alertTracker = DownloadAlertTracker(widget.controller.downloads);
+    widget.controller.addListener(_onAlerts);
+  }
+
+  void _onAlerts() {
+    for (final alert in _alertTracker.takeNewAlerts(widget.controller.downloads)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final message = alert.type == DownloadAlertType.completed
+            ? 'Download complete: ${alert.record.fileName}'
+            : 'Download failed: ${alert.record.fileName}. Open Diagnostics for details.';
+        _message(message);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onAlerts);
+    super.dispose();
+  }
 
   Future<void> _addDownload() async {
     final input = await showDialog<_DownloadInput>(
@@ -169,6 +196,32 @@ class _DownloadHomeState extends State<DownloadHome> {
         category: input.category,
         alternateUrls: input.alternateUrls,
       );
+    } on DuplicateDownloadException catch (duplicate) {
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Duplicate download detected'),
+          content: Text('This URL is already in JDM as '
+              '"${duplicate.existing.fileName}" (${duplicate.existing.status.name}). '
+              'Download another copy anyway?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true),
+                child: const Text('Add another copy')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      try {
+        await widget.controller.addUrl(input.url, fileName: input.name,
+            quality: input.quality, scheduledAt: input.scheduledAt,
+            category: input.category, alternateUrls: input.alternateUrls,
+            allowDuplicate: true);
+      } catch (error) {
+        if (mounted) _message('Duplicate download could not start: $error');
+      }
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -232,6 +285,8 @@ class _DownloadHomeState extends State<DownloadHome> {
     if (action == 'resume') await widget.controller.resume(record.id);
     if (action == 'earlier') await widget.controller.moveEarlier(record.id);
     if (action == 'later') await widget.controller.moveLater(record.id);
+    if (action == 'top') await widget.controller.moveToFront(record.id);
+    if (action == 'bottom') await widget.controller.moveToBack(record.id);
     if (action == 'remove') await _remove(record);
     if (action == 'path' && mounted) {
       await showDialog<void>(
@@ -370,6 +425,9 @@ class _DownloadHomeState extends State<DownloadHome> {
       await widget.controller.pauseAll();
     } else if (action == 'resumeAll') {
       await widget.controller.resumeAll();
+    } else if (action == 'retryFailed') {
+      final count = await widget.controller.retryAllFailed();
+      if (mounted) _message('Queued $count failed downloads for retry.');
     }
   }
 
@@ -505,6 +563,8 @@ class _DownloadHomeState extends State<DownloadHome> {
                     child: Text('Pause all downloads')),
                 const PopupMenuItem(value: 'resumeAll',
                     child: Text('Resume all paused')),
+                const PopupMenuItem(value: 'retryFailed',
+                    child: Text('Retry all failed downloads')),
               ],
             ),
             IconButton(
@@ -545,6 +605,7 @@ class _DownloadHomeState extends State<DownloadHome> {
                       child: Column(
                         children: [
                           _summary(all),
+                          _speedGraph(),
                           if (!isDesktop) _mobileFilters(),
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -626,7 +687,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 1.1.0 • Md Jahidul Islam',
+              child: Text('JDM 1.2.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -648,6 +709,41 @@ class _DownloadHomeState extends State<DownloadHome> {
           Expanded(child: _stat('Queued', '$queued', Icons.schedule, Colors.orange)),
         ],
       ),
+    );
+  }
+
+  Widget _speedGraph() {
+    final samples = widget.controller.speedHistory;
+    final maxSpeed = samples.fold<double>(0,
+        (largest, sample) => sample.bytesPerSecond > largest
+            ? sample.bytesPerSecond : largest);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 5),
+      child: SizedBox(height: 88, child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(children: [
+            SizedBox(width: 114, child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Live speed', style: TextStyle(fontSize: 12)),
+                Text('${_bytes(widget.controller.latestSpeedBytesPerSecond.toInt())}/s',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('Peak ${_bytes(maxSpeed.toInt())}/s',
+                    style: const TextStyle(fontSize: 10)),
+              ],
+            )),
+            const SizedBox(width: 8),
+            Expanded(child: CustomPaint(
+              painter: _SpeedGraphPainter(samples,
+                  Theme.of(context).colorScheme.primary),
+              child: const SizedBox.expand(),
+            )),
+          ]),
+        ),
+      )),
     );
   }
 
@@ -897,6 +993,8 @@ class _DownloadHomeState extends State<DownloadHome> {
               record.status == DownloadStatus.queued)
             const PopupMenuItem(value: 'resume', child: Text('Resume / Retry')),
           if (record.status == DownloadStatus.queued) ...[
+            const PopupMenuItem(value: 'top', child: Text('Move to top of queue')),
+            const PopupMenuItem(value: 'bottom', child: Text('Move to bottom of queue')),
             const PopupMenuItem(value: 'earlier', child: Text('Move earlier in queue')),
             const PopupMenuItem(value: 'later', child: Text('Move later in queue')),
           ],
@@ -1022,8 +1120,8 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
       }
       await widget.controller.setAndroidCompletionNotificationsEnabled(enabled);
       _completionFeedback = enabled
-          ? 'A notification will appear when a new download completes.'
-          : 'Download completion notifications disabled.';
+          ? 'Android alerts will appear when downloads complete or fail.'
+          : 'Android download alerts disabled.';
     } catch (error) {
       _completionFeedback = 'Could not update notification settings: $error';
     } finally {
@@ -1140,7 +1238,7 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                 ),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Download completed notifications'),
+                  title: const Text('Download complete / failed alerts'),
                   subtitle: const Text('Notify when a new download finishes. '
                       'Android 13+ asks for notification permission.'),
                   value: widget.controller.androidCompletionNotificationsEnabled,
@@ -1186,6 +1284,50 @@ String _bytes(int? size) {
     index++;
   }
   return '${value.toStringAsFixed(index == 0 ? 0 : 1)} ${names[index]}';
+}
+
+class _SpeedGraphPainter extends CustomPainter {
+  const _SpeedGraphPainter(this.samples, this.color);
+
+  final List<DownloadSpeedSample> samples;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    final guide = Paint()
+      ..color = color.withAlpha(36)
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(0, size.height - 2),
+        Offset(size.width, size.height - 2), guide);
+    canvas.drawLine(Offset(0, size.height / 2),
+        Offset(size.width, size.height / 2), guide);
+    if (samples.isEmpty) return;
+    final peak = samples.fold<double>(1, (maximum, sample) =>
+        sample.bytesPerSecond > maximum ? sample.bytesPerSecond : maximum);
+    // Display the last minute of throughput, newest value on the right.
+    final step = size.width / 59;
+    final firstX = size.width - (samples.length - 1) * step;
+    final path = Path();
+    for (var index = 0; index < samples.length; index++) {
+      final x = firstX + index * step;
+      final y = (size.height - 4) *
+          (1 - samples[index].bytesPerSecond / peak) + 2;
+      if (index == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(path, Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SpeedGraphPainter oldDelegate) => true;
 }
 
 class _DownloadInput {

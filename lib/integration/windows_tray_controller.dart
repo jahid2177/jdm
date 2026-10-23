@@ -7,14 +7,17 @@ import 'package:window_manager/window_manager.dart';
 
 import '../download/download_controller.dart';
 import 'browser_bridge_server.dart';
+import 'download_alert_tracker.dart';
 
 /// The running Flutter process, downloads and browser bridge stay alive when
 /// the user closes the main window. Explicit Exit shuts them down cleanly.
 class WindowsTrayController with TrayListener, WindowListener {
-  WindowsTrayController._(this.controller, this.bridge);
+  WindowsTrayController._(this.controller, this.bridge)
+      : _alerts = DownloadAlertTracker(controller.downloads);
 
   final DownloadController controller;
   final BrowserBridgeServer? bridge;
+  final DownloadAlertTracker _alerts;
   bool _exiting = false;
 
   static Future<WindowsTrayController?> attach(
@@ -37,6 +40,7 @@ class WindowsTrayController with TrayListener, WindowListener {
       ]));
       trayManager.addListener(instance);
       windowManager.addListener(instance);
+      controller.addListener(instance._onDownloadsChanged);
       // Only intercept Close after the tray can restore the application.
       await windowManager.setPreventClose(true);
       return instance;
@@ -44,6 +48,7 @@ class WindowsTrayController with TrayListener, WindowListener {
       debugPrint('System tray unavailable; normal window close remains: $failure');
       trayManager.removeListener(instance);
       windowManager.removeListener(instance);
+      controller.removeListener(instance._onDownloadsChanged);
       try {
         await windowManager.setPreventClose(false);
         await trayManager.destroy();
@@ -55,6 +60,20 @@ class WindowsTrayController with TrayListener, WindowListener {
   Future<void> showWindow() async {
     await windowManager.show();
     await windowManager.focus();
+  }
+
+  void _onDownloadsChanged() {
+    for (final alert in _alerts.takeNewAlerts(controller.downloads)) {
+      final label = alert.type == DownloadAlertType.completed
+          ? 'Completed' : 'Failed';
+      final file = alert.record.fileName;
+      // A hover tooltip is supported without a native toast dependency.
+      // Windows also displays an in-app alert while the window is visible.
+      final caption = 'JDM • $label: ${file.length > 34 ? '${file.substring(0, 34)}…' : file}';
+      unawaited(trayManager.setToolTip(caption).catchError((Object error) {
+        debugPrint('Could not update JDM tray tooltip: $error');
+      }));
+    }
   }
 
   @override
@@ -92,6 +111,7 @@ class WindowsTrayController with TrayListener, WindowListener {
       if (bridge != null) await bridge!.close();
       windowManager.removeListener(this);
       trayManager.removeListener(this);
+      controller.removeListener(_onDownloadsChanged);
       await trayManager.destroy();
       await windowManager.setPreventClose(false);
       await windowManager.destroy();

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../download/download_controller.dart';
 import '../download/download_record.dart';
+import 'download_alert_tracker.dart';
 import 'completed_file_actions.dart';
 
 /// Pure, testable detection of newly completed records. Previously completed
@@ -35,7 +36,8 @@ class CompletionTransitionTracker {
 /// a user enables auto-export for the first time.
 class AndroidCompletionCoordinator {
   AndroidCompletionCoordinator(this.controller)
-      : _tracker = CompletionTransitionTracker(controller.downloads) {
+      : _tracker = CompletionTransitionTracker(controller.downloads),
+        _alerts = DownloadAlertTracker(controller.downloads) {
     controller.addListener(_onControllerChanged);
   }
 
@@ -43,6 +45,7 @@ class AndroidCompletionCoordinator {
 
   final DownloadController controller;
   final CompletionTransitionTracker _tracker;
+  final DownloadAlertTracker _alerts;
   final Map<String, Future<String>> _activeExports = {};
 
   static Future<bool> requestNotificationPermission() async =>
@@ -53,6 +56,12 @@ class AndroidCompletionCoordinator {
       await _native.invokeMethod<bool>('supportsPublicDownloads') ?? false;
 
   void _onControllerChanged() {
+    for (final alert in _alerts.takeNewAlerts(controller.downloads)) {
+      if (alert.type == DownloadAlertType.failed &&
+          controller.androidCompletionNotificationsEnabled) {
+        unawaited(_notifyFailed(alert.record));
+      }
+    }
     for (final record in _tracker.takeNewCompletions(controller.downloads)) {
       if (controller.androidCompletionNotificationsEnabled) {
         unawaited(_notifyCompleted(record));
@@ -74,6 +83,17 @@ class AndroidCompletionCoordinator {
       });
     } catch (error) {
       debugPrint('Download completion notification failed: $error');
+    }
+  }
+
+  Future<void> _notifyFailed(DownloadRecord record) async {
+    try {
+      await _native.invokeMethod<bool>('notifyDownloadFailed', {
+        'id': record.id,
+        'fileName': record.fileName,
+      });
+    } catch (error) {
+      debugPrint('Download failure notification failed: $error');
     }
   }
 

@@ -24,6 +24,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "com.jahidul.jdm/files"
         private const val COMPLETION_CHANNEL = "jdm_download_complete"
+        private const val FAILURE_CHANNEL = "jdm_download_failed"
         private const val NOTIFICATION_PERMISSION_REQUEST = 9038
     }
 
@@ -45,6 +46,19 @@ class MainActivity : FlutterActivity() {
                         } else {
                             try {
                                 result.success(showDownloadCompleted(id, fileName))
+                            } catch (failure: Exception) {
+                                result.error("NOTIFICATION_FAILED", failure.message, null)
+                            }
+                        }
+                    }
+                    "notifyDownloadFailed" -> {
+                        val id = call.argument<String>("id")
+                        val fileName = call.argument<String>("fileName")
+                        if (id.isNullOrBlank() || fileName.isNullOrBlank()) {
+                            result.error("INVALID_ARGUMENTS", "Missing notification details", null)
+                        } else {
+                            try {
+                                result.success(showDownloadFailed(id, fileName))
                             } catch (failure: Exception) {
                                 result.error("NOTIFICATION_FAILED", failure.message, null)
                             }
@@ -108,7 +122,18 @@ class MainActivity : FlutterActivity() {
         pendingNotificationPermission = null
     }
 
-    private fun showDownloadCompleted(id: String, fileName: String): Boolean {
+    private fun showDownloadCompleted(id: String, fileName: String): Boolean =
+        showDownloadNotification(id, fileName, COMPLETION_CHANNEL,
+            "Completed downloads", "Download complete")
+
+    private fun showDownloadFailed(id: String, fileName: String): Boolean =
+        showDownloadNotification(id, fileName, FAILURE_CHANNEL,
+            "Failed downloads", "Download failed")
+
+    private fun showDownloadNotification(
+        id: String, fileName: String, channelId: String,
+        channelName: String, title: String
+    ): Boolean {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (!notificationsAllowed(manager)) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -119,8 +144,8 @@ class MainActivity : FlutterActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
                 NotificationChannel(
-                    COMPLETION_CHANNEL,
-                    "Completed downloads",
+                    channelId,
+                    channelName,
                     NotificationManager.IMPORTANCE_DEFAULT
                 )
             )
@@ -133,13 +158,13 @@ class MainActivity : FlutterActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, COMPLETION_CHANNEL)
+            Notification.Builder(this, channelId)
         } else {
             Notification.Builder(this)
         }
         val notification = builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Download complete")
+            .setContentTitle(title)
             .setContentText(fileName.take(200))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)

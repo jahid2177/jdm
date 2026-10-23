@@ -89,6 +89,10 @@ class BrowserBridgeServer {
         fileName: payload['fileName'] as String?,
       );
       await reply(HttpStatus.ok, {'ok': true, 'taskId': record.id});
+    } on DuplicateDownloadException catch (duplicate) {
+      await reply(HttpStatus.conflict,
+          {'ok': false, 'error': 'duplicate_download',
+           'taskId': duplicate.existing.id});
     } on FormatException {
       await reply(HttpStatus.badRequest, {'ok': false, 'error': 'invalid_url'});
     } catch (_) {

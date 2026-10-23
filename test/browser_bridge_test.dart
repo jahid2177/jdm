@@ -83,8 +83,13 @@ void main() {
       expect(receipt['ok'], true);
       await controller.waitForIdle();
       expect(controller.downloads.length, 1);
-      expect(await File('${downloads.path}/hello.txt').readAsString(),
+      expect(await File(controller.downloads.single.savePath).readAsString(),
           'example file bytes');
+      final duplicate = await send(metadata['token'] as String, downloadUrl);
+      expect(duplicate.statusCode, HttpStatus.conflict);
+      final alreadyPresent = jsonDecode(await utf8.decoder.bind(duplicate).join());
+      expect(alreadyPresent['error'], 'duplicate_download');
+      expect(controller.downloads.length, 1);
     } finally {
       client.close(force: true);
       await bridge.close();

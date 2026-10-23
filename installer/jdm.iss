@@ -3,9 +3,9 @@
 [Setup]
 AppId={{8DE16018-3135-4712-9A36-7AAF5E83E410}
 AppName=Jahid Download Manager
-AppVersion=1.1.0
-AppVerName=Jahid Download Manager 1.1.0
-VersionInfoVersion=1.1.0
+AppVersion=1.2.0
+AppVerName=Jahid Download Manager 1.2.0
+VersionInfoVersion=1.2.0
 AppPublisher=Md Jahidul Islam
 SetupIconFile=..\assets\tray_icon.ico
 DefaultDirName={localappdata}\Programs\Jahid Download Manager
@@ -15,7 +15,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\jahid_download_manager.exe
 OutputDir=..\build\installer
-OutputBaseFilename=JDM-Setup-v1.1.0-Windows-x64
+OutputBaseFilename=JDM-Setup-v1.2.0-Windows-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 11 (v1.1.0)**, a cross-platform HTTP(S)
+This repository contains **Milestone 12 (v1.2.0)**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -332,6 +332,39 @@ machine; Windows/Android runtime behavior has not been claimed device-tested.
 perform cryptographic content equality checks between different hosts. It
 avoids mixing bytes by switching only before any data is saved. The Windows
 installer for this milestone is `JDM-Setup-v1.1.0-Windows-x64.exe`.
+
+## New in Milestone 12 — queue priority, duplicates, speed chart and alerts
+
+- **Duplicate URL detection:** Adding the exact same primary HTTP(S) URL again
+  shows a confirmation dialog, with an explicit **Add another copy** choice.
+  The download engine rejects duplicates by default; callers must explicitly
+  opt in to create another one. Existing completed files are not overwritten.
+  The Windows browser bridge returns HTTP 409 `duplicate_download` rather
+  than silently enqueueing a second copy.
+- **Enhanced queue:** Queued items have **Move to top of queue** and
+  **Move to bottom of queue** commands alongside the existing one-step
+  controls. The queue menu also offers **Retry all failed downloads**. Queue
+  reorder persists across application restarts. Bulk retry preserves
+  existing partial files; the normal resume validator still applies.
+- **Live speed graph:** A compact 60-sample graph displays measured aggregate
+  transfer throughput and the observed peak in both Windows and Android
+  layouts. JDM calculates it using actual byte-count differences per sample
+  while transfers run, not a promised network speed. Empty/idle periods show
+  zero speed. The graph history is in memory, not exported to backups.
+- **Download status alerts:** In-app notices announce newly completed or
+  failed downloads, without replaying old completed history at startup.
+  Android adds native failed-download notifications alongside its existing
+  successful-download notifications, gated by the same opt-in permission and
+  setting. Windows updates its tray tooltip with the latest completed/failed
+  filename (plus in-app alerts while the app is open). **Windows system toast
+  notifications are not implemented** in this milestone.
+- Added tests for duplicate confirmation enforcement, queue top/bottom
+  movement, bulk retry, measured throughput, completed/failed alert
+  transitions, and browser bridge duplicate responses.
+
+The v1.2.0 Windows installer name is
+`JDM-Setup-v1.2.0-Windows-x64.exe`. As before, the installer and APK must be
+built through GitHub Actions; this source archive does not contain binaries.
 
 ### Browser extension setup on Windows
 
