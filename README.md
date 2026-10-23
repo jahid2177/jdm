@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 7**, a cross-platform HTTP(S)
+This repository contains **Milestone 8**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -171,6 +171,51 @@ native builds must be run in the GitHub Actions workflow or an SDK-equipped
 machine. Neither platform's system behavior is asserted as device-tested in
 this source release.
 
+## New in Milestone 8 — completed file actions and public Downloads export
+
+- A **completed** download's action menu now contains **Open file** and
+  **Share file** on Android and Windows, with the relevant OS app chooser.
+  The original JDM file remains intact. Missing, empty and unfinished files
+  are rejected before launching any native file action.
+- Windows: **Show in Windows Explorer** selects the completed file in its
+  folder. Every download also has **Copy download URL**.
+- Android 10+ (API 29+): **Export to Downloads/JDM** copies a completed file
+  from JDM's app-private storage to the user-visible shared Downloads area
+  through **MediaStore.Downloads**. This is a copy, not a move; the original
+  stays available for resume/history and is never deleted by exporting.
+- The Android export uses a **64-KiB streaming buffer**, so a large video
+  does not need to fit in RAM. It marks the destination `IS_PENDING` during
+  writing, publishes the entry only after successfully writing and closing,
+  and deletes an unfinished destination entry on failure. The original file
+  is untouched after an export failure.
+- A dedicated Kotlin `MainActivity` implements the Android MediaStore
+  platform channel. It validates that the source file is inside JDM's app
+  storage, and performs the disk copy on a worker thread.
+- New Android downloads go to JDM's app-private application-support `downloads`
+  directory, where Android's file-sharing provider can safely authorize a
+  chosen viewer. Existing records keep their earlier `app_flutter` file paths;
+  Open/Share copies those *legacy* files into a temporary provider-readable
+  location when requested. The original remains unchanged. Large legacy
+  files need enough extra temporary disk space to be opened or shared.
+- Android 9 or older: public Downloads export intentionally returns an
+  **unsupported-version** error; legacy storage permission/SAF fallback has
+  not yet been implemented. Open and Share are independent of MediaStore.
+- No broad `MANAGE_EXTERNAL_STORAGE` or unnecessary storage permissions are
+  requested. An Android FileProvider exposes only the app's file/cache and
+  app-specific external-file roots to explicitly chosen receiving apps.
+- Open and Share use pinned Flutter plugins compatible with Dart 3.4. Windows
+  file sharing depends on a suitable operating-system handler, and Open
+  depends on a corresponding installed application for the file type.
+- Added file action validation tests for unfinished, missing, empty and
+  completed files.
+
+**Important:** Android app-private storage is still the JDM download engine's
+main destination. Public Downloads are **not automatic**:
+choose **Export to Downloads/JDM** for each completed item. Do not delete the
+app or its data before exporting wanted files. The Kotlin source is provided
+under `android/app/src/main/kotlin/com/jahidul/jahid_download_manager/` and
+must remain present when the platform scaffold is generated in GitHub Actions.
+
 ### Browser extension setup on Windows
 
 1. Download the **JDM-Windows-x64** GitHub Actions artifact and extract it
@@ -236,14 +281,15 @@ Some page URLs download HTML rather than embedded video.
 This is **not the full IDM-equivalent app**. The following are planned:
 
 - Adaptive connection tuning and configurable per-host connection limits.
-- Android Downloads folder export through Storage Access Framework/MediaStore.
+- Optional automatic saving into public Android Downloads, a user-selected
+  Storage Access Framework export path, and Android 9-and-older compatibility.
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
 - Android-compatible licensed media muxer and advanced live capture.
 - Scheduler execution while JDM is closed, site grabber and a persistent
   Windows background *service* independent of the running tray application.
 - Native Windows installer; Android background job restart after process death,
-  persistent progress/complete notifications and platform download folder export.
+  and persistent progress/complete notifications.
 - Per-server retry policies, checksums and advanced test coverage.
 
 ## How to run locally
@@ -275,7 +321,7 @@ flutter build apk --release --target-platform android-arm64
 The Android release manifest includes `INTERNET` permission and explicitly
 allows user-entered HTTP URLs. HTTPS is safer and should be preferred.
 
-The initial Android save folder is **app-private documents storage**, not the
+The Android save folder is **app-private application storage**, not the
 public Downloads folder. Removing the Android app may remove these downloaded
 files. Do not store your only important copy there. On Windows, files default
 to the user's Downloads directory when available.

@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'download/download_controller.dart';
 import 'download/download_record.dart';
 import 'integration/android_background_keeper.dart';
 import 'integration/browser_bridge_server.dart';
+import 'integration/completed_file_actions.dart';
 import 'integration/windows_tray_controller.dart';
 
 Future<void> main() async {
@@ -134,6 +136,7 @@ class DownloadHome extends StatefulWidget {
 class _DownloadHomeState extends State<DownloadHome> {
   DownloadFilter filter = DownloadFilter.all;
   String search = '';
+  final Set<String> _busyFileActions = {};
 
   Future<void> _addDownload() async {
     final input = await showDialog<_DownloadInput>(
@@ -179,6 +182,16 @@ class _DownloadHomeState extends State<DownloadHome> {
   }
 
   Future<void> _handle(DownloadRecord record, String action) async {
+    if (action == 'open' || action == 'share' ||
+        action == 'reveal' || action == 'export') {
+      await _runFileAction(record, action);
+      return;
+    }
+    if (action == 'copyUrl') {
+      await Clipboard.setData(ClipboardData(text: record.url));
+      if (mounted) _message('Download URL copied to clipboard.');
+      return;
+    }
     if (action == 'pause') await widget.controller.pause(record.id);
     if (action == 'resume') await widget.controller.resume(record.id);
     if (action == 'earlier') await widget.controller.moveEarlier(record.id);
@@ -198,6 +211,40 @@ class _DownloadHomeState extends State<DownloadHome> {
           ],
         ),
       );
+    }
+  }
+
+  void _message(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _runFileAction(DownloadRecord record, String action) async {
+    if (!_busyFileActions.add(record.id)) return;
+    setState(() {});
+    try {
+      switch (action) {
+        case 'open':
+          await CompletedFileActions.open(record);
+          break;
+        case 'share':
+          await CompletedFileActions.share(record);
+          break;
+        case 'reveal':
+          await CompletedFileActions.revealInWindowsExplorer(record);
+          break;
+        case 'export':
+          if (mounted) _message('Exporting to Downloads/JDM…');
+          await CompletedFileActions.exportToAndroidDownloads(record);
+          if (mounted) _message('Saved to Downloads/JDM: ${record.fileName}');
+          break;
+      }
+    } catch (failure) {
+      if (mounted) _message('File action failed: $failure');
+    } finally {
+      _busyFileActions.remove(record.id);
+      if (mounted) setState(() {});
     }
   }
 
@@ -346,7 +393,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.7.0 • Md Jahidul Islam',
+              child: Text('JDM 0.8.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -570,9 +617,22 @@ class _DownloadHomeState extends State<DownloadHome> {
   }
 
   Widget _actions(DownloadRecord record) => PopupMenuButton<String>(
-        tooltip: 'Download actions',
+        tooltip: _busyFileActions.contains(record.id)
+            ? 'File operation in progress' : 'Download actions',
+        enabled: !_busyFileActions.contains(record.id),
         onSelected: (action) => _handle(record, action),
         itemBuilder: (context) => [
+          if (record.status == DownloadStatus.completed) ...[
+            const PopupMenuItem(value: 'open', child: Text('Open file')),
+            if (Platform.isWindows)
+              const PopupMenuItem(value: 'reveal',
+                  child: Text('Show in Windows Explorer')),
+            if (Platform.isAndroid)
+              const PopupMenuItem(value: 'export',
+                  child: Text('Export to Downloads/JDM')),
+            const PopupMenuItem(value: 'share', child: Text('Share file')),
+            const PopupMenuDivider(),
+          ],
           if (record.status == DownloadStatus.downloading)
             const PopupMenuItem(value: 'pause', child: Text('Pause')),
           if (record.status == DownloadStatus.paused ||
@@ -584,6 +644,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const PopupMenuItem(value: 'later', child: Text('Move later in queue')),
           ],
           const PopupMenuItem(value: 'path', child: Text('Show file path')),
+          const PopupMenuItem(value: 'copyUrl', child: Text('Copy download URL')),
           const PopupMenuItem(value: 'remove', child: Text('Remove from list')),
         ],
       );

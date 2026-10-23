@@ -40,8 +40,11 @@ class DownloadController extends ChangeNotifier {
   static Future<DownloadController> create() async {
     final stateDirectory = await getApplicationSupportDirectory();
     final publicDownloads = Platform.isWindows ? await getDownloadsDirectory() : null;
-    // Android scoped storage initially uses an app-private folder.
-    final downloads = publicDownloads ?? await getApplicationDocumentsDirectory();
+    // Android's FileProvider can expose app-support/files safely to file
+    // viewers and sharing apps. Existing records retain their old save paths.
+    final downloads = Platform.isAndroid
+        ? Directory('${stateDirectory.path}${Platform.pathSeparator}downloads')
+        : publicDownloads ?? await getApplicationDocumentsDirectory();
     final executable = Platform.isWindows
         ? Platform.environment['JDM_FFMPEG_PATH']
         : null;
