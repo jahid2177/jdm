@@ -77,7 +77,7 @@ class DownloadController extends ChangeNotifier {
     DateTime Function()? nowProvider,
     FreeDiskBytesReader? freeDiskBytesReader,
     int diskReserveBytes = 64 * 1024 * 1024,
-  ) => DownloadController._(
+  }) => DownloadController._(
         stateDirectory,
         downloadDirectory,
         segmentThresholdBytes: segmentThresholdBytes,
