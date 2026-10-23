@@ -1,0 +1,33 @@
+; Jahid Download Manager per-user Windows x64 installer.
+; Compile after flutter build windows and native-host packaging finish.
+[Setup]
+AppId={{8DE16018-3135-4712-9A36-7AAF5E83E410}
+AppName=Jahid Download Manager
+AppVersion=0.9.0
+AppVerName=Jahid Download Manager 0.9.0
+AppPublisher=Md Jahidul Islam
+SetupIconFile=..\assets\tray_icon.ico
+DefaultDirName={localappdata}\Programs\Jahid Download Manager
+DefaultGroupName=Jahid Download Manager
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\jahid_download_manager.exe
+OutputDir=..\build\installer
+OutputBaseFilename=JDM-Setup-v0.9.0-Windows-x64
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+
+[Files]
+Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\Jahid Download Manager"; Filename: "{app}\jahid_download_manager.exe"
+Name: "{autodesktop}\Jahid Download Manager"; Filename: "{app}\jahid_download_manager.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\jahid_download_manager.exe"; Description: "Launch Jahid Download Manager"; Flags: nowait postinstall skipifsilent

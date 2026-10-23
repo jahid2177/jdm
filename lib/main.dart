@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'download/download_controller.dart';
 import 'download/download_record.dart';
 import 'integration/android_background_keeper.dart';
+import 'integration/android_completion_coordinator.dart';
 import 'integration/browser_bridge_server.dart';
 import 'integration/completed_file_actions.dart';
 import 'integration/windows_tray_controller.dart';
@@ -27,11 +28,15 @@ Future<void> main() async {
   final background = Platform.isAndroid
       ? AndroidBackgroundKeeper(controller)
       : null;
+  final completion = Platform.isAndroid
+      ? AndroidCompletionCoordinator(controller)
+      : null;
   runApp(JdmApp(
     controller: controller,
     bridge: bridge,
     tray: tray,
     background: background,
+    completion: completion,
   ));
 }
 
@@ -42,11 +47,13 @@ class JdmApp extends StatefulWidget {
     this.bridge,
     this.tray,
     this.background,
+    this.completion,
   });
   final DownloadController controller;
   final BrowserBridgeServer? bridge;
   final WindowsTrayController? tray;
   final AndroidBackgroundKeeper? background;
+  final AndroidCompletionCoordinator? completion;
 
   @override
   State<JdmApp> createState() => _JdmAppState();
@@ -63,6 +70,7 @@ class _JdmAppState extends State<JdmApp> {
       unawaited(widget.bridge!.close());
     }
     widget.background?.dispose();
+    widget.completion?.dispose();
     super.dispose();
   }
 
@@ -86,6 +94,7 @@ class _JdmAppState extends State<JdmApp> {
         home: DownloadHome(
           controller: widget.controller,
           background: widget.background,
+          completion: widget.completion,
           onToggleTheme: () => setState(() {
             mode = mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
           }),
@@ -124,10 +133,12 @@ class DownloadHome extends StatefulWidget {
     required this.controller,
     required this.onToggleTheme,
     this.background,
+    this.completion,
   });
   final DownloadController controller;
   final VoidCallback onToggleTheme;
   final AndroidBackgroundKeeper? background;
+  final AndroidCompletionCoordinator? completion;
 
   @override
   State<DownloadHome> createState() => _DownloadHomeState();
@@ -236,7 +247,11 @@ class _DownloadHomeState extends State<DownloadHome> {
           break;
         case 'export':
           if (mounted) _message('Exporting to Downloads/JDM…');
-          await CompletedFileActions.exportToAndroidDownloads(record);
+          if (widget.completion case final AndroidCompletionCoordinator coordinator) {
+            await coordinator.export(record, force: true);
+          } else {
+            await CompletedFileActions.exportToAndroidDownloads(record);
+          }
           if (mounted) _message('Saved to Downloads/JDM: ${record.fileName}');
           break;
       }
@@ -266,6 +281,7 @@ class _DownloadHomeState extends State<DownloadHome> {
       builder: (_) => _QueueSettingsDialog(
         controller: widget.controller,
         background: widget.background,
+        completion: widget.completion,
       ),
     );
   }
@@ -393,7 +409,7 @@ class _DownloadHomeState extends State<DownloadHome> {
             const Spacer(),
             const Padding(
               padding: EdgeInsets.all(18),
-              child: Text('JDM 0.8.0 • Md Jahidul Islam',
+              child: Text('JDM 0.9.0 • Md Jahidul Islam',
                   style: TextStyle(fontSize: 11)),
             ),
           ],
@@ -564,6 +580,20 @@ class _DownloadHomeState extends State<DownloadHome> {
                     Text(record.error!, style: const TextStyle(color: Colors.red,
                         fontSize: 12)),
                   ],
+                  if (record.androidExportError != null &&
+                      record.status == DownloadStatus.completed) ...[
+                    const SizedBox(height: 6),
+                    Text('Downloads export: ${record.androidExportError}',
+                        style: const TextStyle(color: Colors.orange,
+                            fontSize: 12)),
+                  ],
+                  if (Platform.isAndroid &&
+                      record.androidDownloadsUri != null &&
+                      record.androidExportError == null) ...[
+                    const SizedBox(height: 6),
+                    const Text('Saved to public Downloads/JDM',
+                        style: TextStyle(color: Colors.green, fontSize: 12)),
+                  ],
                 ],
               ),
             ),
@@ -664,10 +694,15 @@ class _DownloadHomeState extends State<DownloadHome> {
 }
 
 class _QueueSettingsDialog extends StatefulWidget {
-  const _QueueSettingsDialog({required this.controller, this.background});
+  const _QueueSettingsDialog({
+    required this.controller,
+    this.background,
+    this.completion,
+  });
 
   final DownloadController controller;
   final AndroidBackgroundKeeper? background;
+  final AndroidCompletionCoordinator? completion;
 
   @override
   State<_QueueSettingsDialog> createState() => _QueueSettingsDialogState();
@@ -677,7 +712,9 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
   late int _limit;
   late int _concurrent;
   bool _changingBackground = false;
+  bool _changingCompletionPreference = false;
   String? _backgroundFeedback;
+  String? _completionFeedback;
 
   @override
   void initState() {
@@ -705,6 +742,54 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
       });
     } finally {
       if (mounted) setState(() => _changingBackground = false);
+    }
+  }
+
+  Future<void> _toggleAutomaticExport(bool enabled) async {
+    if (widget.completion == null) return;
+    setState(() {
+      _changingCompletionPreference = true;
+      _completionFeedback = null;
+    });
+    try {
+      if (enabled &&
+          !await AndroidCompletionCoordinator.supportsPublicDownloads()) {
+        _completionFeedback = 'Automatic public Downloads export requires '
+            'Android 10 or newer.';
+        return;
+      }
+      await widget.controller.setAndroidAutoExportEnabled(enabled);
+      _completionFeedback = enabled
+          ? 'Newly completed downloads will be copied to Downloads/JDM.'
+          : 'Automatic Downloads export disabled.';
+    } catch (error) {
+      _completionFeedback = 'Could not update Downloads export: $error';
+    } finally {
+      if (mounted) setState(() => _changingCompletionPreference = false);
+    }
+  }
+
+  Future<void> _toggleCompletionNotifications(bool enabled) async {
+    if (widget.completion == null) return;
+    setState(() {
+      _changingCompletionPreference = true;
+      _completionFeedback = null;
+    });
+    try {
+      if (enabled &&
+          !await AndroidCompletionCoordinator.requestNotificationPermission()) {
+        _completionFeedback = 'Notifications are disabled or permission was '
+            'declined in Android settings.';
+        return;
+      }
+      await widget.controller.setAndroidCompletionNotificationsEnabled(enabled);
+      _completionFeedback = enabled
+          ? 'A notification will appear when a new download completes.'
+          : 'Download completion notifications disabled.';
+    } catch (error) {
+      _completionFeedback = 'Could not update notification settings: $error';
+    } finally {
+      if (mounted) setState(() => _changingCompletionPreference = false);
     }
   }
 
@@ -770,6 +855,36 @@ class _QueueSettingsDialogState extends State<_QueueSettingsDialog> {
                     'restrictions, its dataSync time limit, or force-stop. '
                     'Scheduled downloads are not guaranteed while JDM is '
                     'closed.', style: TextStyle(fontSize: 12)),
+              ],
+              if (widget.completion != null) ...[
+                const Divider(height: 32),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Auto-export completed downloads'),
+                  subtitle: const Text('Android 10+: copy each NEW completed '
+                      'file to public Downloads/JDM, keeping the original.'),
+                  value: widget.controller.androidAutoExportEnabled,
+                  onChanged: _changingCompletionPreference
+                      ? null : _toggleAutomaticExport,
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Download completed notifications'),
+                  subtitle: const Text('Notify when a new download finishes. '
+                      'Android 13+ asks for notification permission.'),
+                  value: widget.controller.androidCompletionNotificationsEnabled,
+                  onChanged: _changingCompletionPreference
+                      ? null : _toggleCompletionNotifications,
+                ),
+                if (_changingCompletionPreference)
+                  const LinearProgressIndicator(),
+                if (_completionFeedback != null)
+                  Text(_completionFeedback!,
+                      style: const TextStyle(fontSize: 12)),
+                const Text('Already completed files are not automatically '
+                    're-exported when this setting is enabled. '
+                    'Use the item menu to export an older file.',
+                    style: TextStyle(fontSize: 12)),
               ],
             ],
           )),

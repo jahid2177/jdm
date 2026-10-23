@@ -4,7 +4,7 @@
 **Platforms:** Windows 10/11 and Android  
 **Technology:** Flutter/Dart
 
-This repository contains **Milestone 8**, a cross-platform HTTP(S)
+This repository contains **Milestone 9**, a cross-platform HTTP(S)
 download manager. It is an original project inspired by the workflow of
 desktop download managers. It does not contain Internet Download Manager code.
 
@@ -209,12 +209,50 @@ this source release.
 - Added file action validation tests for unfinished, missing, empty and
   completed files.
 
-**Important:** Android app-private storage is still the JDM download engine's
-main destination. Public Downloads are **not automatic**:
-choose **Export to Downloads/JDM** for each completed item. Do not delete the
-app or its data before exporting wanted files. The Kotlin source is provided
+**Milestone 8 default:** Android app-private storage is still the JDM download
+engine's main destination. When auto-export is disabled, choose **Export to
+Downloads/JDM** for each completed item. Do not delete the app or its data
+before exporting wanted files. The Kotlin source is provided
 under `android/app/src/main/kotlin/com/jahidul/jahid_download_manager/` and
 must remain present when the platform scaffold is generated in GitHub Actions.
+
+## New in Milestone 9 — automatic export, completion alerts and Windows installer
+
+- Android **Speed and queue settings** now has two independent opt-in switches:
+  **Auto-export completed downloads** and **Download completed notifications**.
+  Both preferences persist locally and are disabled by default.
+- Android 10+ automatically copies a **newly completed** download to the
+  user-visible `Downloads/JDM` folder when auto-export is enabled. Android 9
+  or older cannot enable this switch. No file is moved or removed.
+- Newly completed downloads are tracked by ID. The automatic exporter shares
+  its in-progress copy with manual export requests, preventing concurrent
+  duplicate copies of the same file. A successful destination URI is saved in
+  the download record, so restarting JDM does not re-export it.
+- Export errors are saved on the task and shown in the Android downloads list;
+  the user can manually retry Export. Existing completed files are **not**
+  exported in bulk just because the switch was enabled or JDM restarted.
+- Completion notifications: Android 13+ requests `POST_NOTIFICATIONS`
+  permission when the user enables alerts. On older supported Android
+  versions, the OS notification-enabled state is checked. Successful new
+  transfers issue individual notifications containing only the filename,
+  with a tap opening JDM. They do not trigger after merely opening JDM with
+  an existing completed history.
+- **Process requirement:** Automatic copying and notifications use the
+  running JDM process. Android force-stop or process death can interrupt an
+  in-progress export; that file may need manual export after relaunch.
+- Windows GitHub Actions continues producing `JDM-Windows-x64.zip`, and now
+  additionally compiles **`JDM-Setup-v0.9.0-Windows-x64.exe`** using Inno Setup.
+  The per-user installer requires no administrator privileges, includes the
+  full Flutter runtime, native messaging host, browser extensions and setup
+  scripts, creates a Start Menu shortcut, and offers an optional desktop icon.
+  The Windows installer is **unsigned**, so Windows may show a publisher
+  warning. Browser extensions still require manual registration/approval.
+- Added tests for persisted completion preferences, per-file export state,
+  error clearing and backward compatibility with older download records.
+
+**Milestone 9 setting note:** Manual Android Export from Milestone 8 still
+works when auto-export is off. With auto-export on, no additional export tap
+is necessary after a new completed task while the JDM process remains alive.
 
 ### Browser extension setup on Windows
 
@@ -281,15 +319,16 @@ Some page URLs download HTML rather than embedded video.
 This is **not the full IDM-equivalent app**. The following are planned:
 
 - Adaptive connection tuning and configurable per-host connection limits.
-- Optional automatic saving into public Android Downloads, a user-selected
-  Storage Access Framework export path, and Android 9-and-older compatibility.
+- A user-selected Storage Access Framework export path and Android 9-and-older
+  public Downloads compatibility.
 - Packaging and signing browser store extensions for general distribution.
 - Automatic browser download interception (if supported by browser policies).
 - Android-compatible licensed media muxer and advanced live capture.
 - Scheduler execution while JDM is closed, site grabber and a persistent
   Windows background *service* independent of the running tray application.
-- Native Windows installer; Android background job restart after process death,
-  and persistent progress/complete notifications.
+- Windows installer code signing and automatic browser-host registration;
+  Android background job restart after process death and persistent progress
+  notifications.
 - Per-server retry policies, checksums and advanced test coverage.
 
 ## How to run locally
@@ -323,7 +362,8 @@ allows user-entered HTTP URLs. HTTPS is safer and should be preferred.
 
 The Android save folder is **app-private application storage**, not the
 public Downloads folder. Removing the Android app may remove these downloaded
-files. Do not store your only important copy there. On Windows, files default
+files. Enable automatic export or use the manual export action before removal.
+Do not store your only important copy there. On Windows, files default
 to the user's Downloads directory when available.
 
 ## GitHub Actions
@@ -335,6 +375,7 @@ scaffolding and creates:
 - `JDM-Android-arm64` containing `app-release.apk`.
 - `JDM-Windows-x64` containing the entire Windows release folder as a ZIP,
   including the Dart native host EXE and browser-extension setup files.
+- `JDM-Windows-Installer-x64` containing the Windows Setup EXE.
 
 For Windows, **extract the full ZIP** before launching the application: the
 `.exe` requires DLL/data files from the same release folder.
@@ -351,6 +392,11 @@ Flutter SDK is not installed here. Build results must be checked in Actions.
   for built-in file and HLS downloads.
 - `lib/main.dart` — adaptive Flutter UI.
 - `lib/integration/browser_bridge_server.dart` — authenticated loopback IPC.
+- `lib/integration/android_completion_coordinator.dart` — running-process
+  completed-task tracking, automatic MediaStore export, notifications.
+- `android/.../MainActivity.kt` — MediaStore export and Android completion
+  notification/permission integration.
+- `installer/jdm.iss` — Windows per-user installer template.
 - `lib/video/video_source_detector.dart` — URL/MIME media classification.
 - `lib/video/hls_vod_downloader.dart` — conservative MPEG-TS HLS VOD downloader.
 - `lib/video/ffmpeg_muxer.dart` — optional Windows FFmpeg invocation and DASH

@@ -75,11 +75,16 @@ class DownloadController extends ChangeNotifier {
   int maxSimultaneous = 3;
   bool _queuePaused = false;
   bool _androidBackgroundEnabled = false;
+  bool _androidAutoExportEnabled = false;
+  bool _androidCompletionNotificationsEnabled = false;
 
   List<DownloadRecord> get downloads => List.unmodifiable(_records);
   int get activeCount => _activeIds.length;
   bool get queuePaused => _queuePaused;
   bool get androidBackgroundEnabled => _androidBackgroundEnabled;
+  bool get androidAutoExportEnabled => _androidAutoExportEnabled;
+  bool get androidCompletionNotificationsEnabled =>
+      _androidCompletionNotificationsEnabled;
   int get speedLimitKibPerSecond => _rateLimiter.bytesPerSecond ~/ 1024;
 
   List<DownloadRecord> get queuedInPriorityOrder => List.unmodifiable(
@@ -217,6 +222,31 @@ class DownloadController extends ChangeNotifier {
     await _saveSettings();
   }
 
+  Future<void> setAndroidAutoExportEnabled(bool enabled) async {
+    _androidAutoExportEnabled = enabled;
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setAndroidCompletionNotificationsEnabled(bool enabled) async {
+    _androidCompletionNotificationsEnabled = enabled;
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> recordAndroidExportResult(
+    String id, {
+    String? uri,
+    String? error,
+  }) async {
+    final record = _find(id);
+    if (record == null || record.status != DownloadStatus.completed) return;
+    if (uri != null) record.androidDownloadsUri = uri;
+    record.androidExportError = error;
+    notifyListeners();
+    await _save();
+  }
+
   Future<void> pauseAll() async {
     _queuePaused = true;
     for (final record in _records) {
@@ -288,6 +318,9 @@ class DownloadController extends ChangeNotifier {
           .clamp(1, 5).toInt();
       _queuePaused = settings['queuePaused'] == true;
       _androidBackgroundEnabled = settings['androidBackgroundEnabled'] == true;
+      _androidAutoExportEnabled = settings['androidAutoExportEnabled'] == true;
+      _androidCompletionNotificationsEnabled =
+          settings['androidCompletionNotificationsEnabled'] == true;
     } catch (_) {
       // If settings are corrupt, retain safe defaults without losing tasks.
     }
@@ -299,6 +332,9 @@ class DownloadController extends ChangeNotifier {
       'maxSimultaneous': maxSimultaneous,
       'queuePaused': _queuePaused,
       'androidBackgroundEnabled': _androidBackgroundEnabled,
+      'androidAutoExportEnabled': _androidAutoExportEnabled,
+      'androidCompletionNotificationsEnabled':
+          _androidCompletionNotificationsEnabled,
     });
     _pendingSettingsSave = _pendingSettingsSave.catchError((Object _) {})
         .then((_) async {
